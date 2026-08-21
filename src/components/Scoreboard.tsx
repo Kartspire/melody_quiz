@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { useUnit } from 'effector-react';
-import { $config, $session, teamScoreChanged } from '../model/game';
+import { $activeGame, $session, teamScoreChanged } from '../model/game';
+import { DraftNumberInput } from './DraftNumberInput';
 
 export function Scoreboard() {
-  const [config, session] = useUnit([$config, $session]);
+  const [config, session] = useUnit([$activeGame, $session]);
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
+
+  if (!config || !session) return null;
 
   return (
     <section className="scoreboard" aria-label="Счёт команд">
@@ -21,19 +24,16 @@ export function Scoreboard() {
             {editing ? (
               <div className="score-editor">
                 <button onClick={() => teamScoreChanged({ teamId: team.id, score: score - 100 })}>−100</button>
-                <input
-                  aria-label={`Баллы ${team.name}`}
-                  type="number"
+                <DraftNumberInput
+                  ariaLabel={`Баллы ${team.name}`}
                   value={score}
-                  onChange={(event) => teamScoreChanged({ teamId: team.id, score: Number(event.target.value) || 0 })}
+                  onCommit={(nextScore) => teamScoreChanged({ teamId: team.id, score: nextScore })}
                 />
                 <button onClick={() => teamScoreChanged({ teamId: team.id, score: score + 100 })}>+100</button>
                 <button className="icon-button" onClick={() => setEditingTeamId(null)} title="Готово">✓</button>
               </div>
             ) : (
-              <button className="score-value" onClick={() => setEditingTeamId(team.id)} title="Изменить баллы вручную">
-                {score}
-              </button>
+              <button className="score-value" onClick={() => setEditingTeamId(team.id)} title="Изменить баллы вручную">{score}</button>
             )}
           </article>
         );

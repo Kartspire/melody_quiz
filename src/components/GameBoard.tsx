@@ -1,27 +1,38 @@
 import { useUnit } from 'effector-react';
 import {
+  $activeGame,
   $activeQuestion,
   $activeRound,
-  $config,
+  $audioAssets,
   $isGameFinished,
   $session,
+  $songs,
   gameRestarted,
+  getGameStartIssues,
   isRoundComplete,
   nextRoundRequested,
+  nobodyGuessed,
   questionClosed,
   questionOpened,
+  resolveQuestion,
+  screenChanged,
   teamAwarded,
+  teamIncorrectToggled,
 } from '../model/game';
 import { AudioQuestion } from './AudioQuestion';
 
 export function GameBoard() {
-  const [config, session, round, activeQuestion, finished] = useUnit([
-    $config,
+  const [config, session, round, activeQuestion, finished, songs, audioAssets] = useUnit([
+    $activeGame,
     $session,
     $activeRound,
     $activeQuestion,
     $isGameFinished,
+    $songs,
+    $audioAssets,
   ]);
+
+  if (!config || !session) return null;
 
   if (finished) {
     const ranking = [...config.teams].sort((a, b) => (session.scores[b.id] ?? 0) - (session.scores[a.id] ?? 0));
@@ -39,7 +50,15 @@ export function GameBoard() {
             </div>
           ))}
         </div>
-        <button className="primary-button" onClick={() => gameRestarted()}>Сыграть заново</button>
+        <button className="primary-button" onClick={() => {
+          const issues = getGameStartIssues(config, songs, audioAssets);
+          if (issues.length > 0) {
+            window.alert('Игра изменилась и сейчас не готова к повторному запуску. Проверьте структуру и аудиофайлы в редакторе.');
+            screenChanged('admin');
+            return;
+          }
+          gameRestarted();
+        }}>Сыграть заново</button>
       </main>
     );
   }
@@ -51,10 +70,17 @@ export function GameBoard() {
         roundName={round.name}
         teams={config.teams}
         awardedTeamId={session.awardedTeamId}
+        answerRevealed={session.answerRevealed}
+        excludedTeamIds={session.activeExcludedTeamIds}
+        currentIncorrectTeamIds={session.currentIncorrectTeamIds}
+        nextExcludedTeamIds={session.nextExcludedTeamIds}
         onAward={(teamId) => teamAwarded(teamId)}
+        onIncorrect={(teamId) => teamIncorrectToggled(teamId)}
+        onNobodyGuessed={() => nobodyGuessed()}
         onClose={() => {
-          const shouldAdvance = isRoundComplete(config, session);
-          questionClosed();
+          const completed = session.answerRevealed;
+          const shouldAdvance = completed && isRoundComplete(config, session);
+          questionClosed({ completed });
           if (shouldAdvance) nextRoundRequested();
         }}
       />
@@ -82,10 +108,17 @@ export function GameBoard() {
         </div>
       </div>
 
+      {session.nextExcludedTeamIds.length > 0 && (
+        <div className="next-skip-notice">
+          <strong>Следующую песню пропускают:</strong>{' '}
+          {config.teams.filter((team) => session.nextExcludedTeamIds.includes(team.id)).map((team) => team.name).join(', ')}
+        </div>
+      )}
+
       {questionsCount === 0 ? (
         <div className="empty-state">
           <h2>В этом раунде пока нет песен</h2>
-          <p>Добавьте категории и песни в админ-панели.</p>
+          <p>Добавьте категории и песни в редакторе.</p>
         </div>
       ) : (
         <div className="quiz-board" style={{ '--category-count': round.categories.length } as React.CSSProperties}>
@@ -95,6 +128,8 @@ export function GameBoard() {
               <div className="board-category__questions">
                 {category.questions.map((question) => {
                   const completed = session.completedQuestionIds.includes(question.id);
+                  const playable = resolveQuestion(question, songs, audioAssets);
+                  const hasMinus = Boolean(playable.minus);
                   return completed ? (
                     <div className="question-slot question-slot--empty" key={question.id} aria-label="Вопрос разыгран" />
                   ) : (
@@ -102,11 +137,11 @@ export function GameBoard() {
                       className="question-card"
                       key={question.id}
                       onClick={() => questionOpened(question.id)}
-                      disabled={!question.minus}
-                      title={question.minus ? `Вопрос на ${question.points}` : 'Сначала загрузите минус в админ-панели'}
+                      disabled={!hasMinus}
+                      title={hasMinus ? `Вопрос на ${question.points}` : 'Выберите песню с загруженным минусом в редакторе'}
                     >
                       {question.points}
-                      {!question.minus && <small>нет аудио</small>}
+                      {!hasMinus && <small>нет аудио</small>}
                     </button>
                   );
                 })}
