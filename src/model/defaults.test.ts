@@ -7,6 +7,9 @@ describe('default game structure', () => {
     expect(game.rounds).toHaveLength(1);
     expect(game.rounds[0].categories).toHaveLength(1);
     expect(game.rounds[0].categories[0].questions).toHaveLength(5);
+    expect(game.interRounds).toEqual([]);
+    expect(game.stages).toHaveLength(1);
+    expect(game.stages[0]).toMatchObject({ kind: 'round', roundId: game.rounds[0].id });
   });
 
   it('creates every added round with one category', () => {

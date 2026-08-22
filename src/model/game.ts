@@ -1,13 +1,17 @@
 import { combine, createEffect, createEvent, createStore, sample } from 'effector';
 import { loadState, saveState, StorageConflictError, subscribeToExternalStorageChanges } from '../lib/storage';
 import { getGameStartIssues, getSessionContinuationIssues, isSha256 } from './validation';
-import { cloneGame, cloneSong, createCategory, createGame, createQuestion, createRound, createSession, createTeam } from './defaults';
+import { cloneGame, cloneSong, createCategory, createGame, createInterRoundStage, createQuestion, createRound, createRoundStage, createSession, createTeam } from './defaults';
 import { DATA_LIMITS, GAME_LIMITS } from './limits';
-import { findQuestion, isRoundComplete, normalizeSession, reconcileSession } from './session';
+import { findQuestion, getActiveStage, getInterRoundForStage, getRoundForStage, getRoundOrdinal, isRoundComplete, normalizeSession, reconcileSession } from './session';
+import { createCommonThemeStage, createContinueLyricsTask, createInterRound, getInterRoundAnswerStepCount, getInterRoundTrackIds } from '../interRounds/templates';
 import type {
   AudioAsset,
   GameConfig,
   GameSession,
+  InterRound,
+  InterRoundTemplateId,
+  MediaTrack,
   PersistedState,
   PlayableQuestion,
   Question,
@@ -36,12 +40,28 @@ export const teamAwarded = createEvent<string>();
 export const teamIncorrectToggled = createEvent<string>();
 export const nobodyGuessed = createEvent();
 export const teamScoreChanged = createEvent<{ teamId: string; score: number }>();
-export const nextRoundRequested = createEvent();
+export const nextStageRequested = createEvent();
+export const nextRoundRequested = nextStageRequested;
 
 export const gameTitleChanged = createEvent<string>();
 export const roundAdded = createEvent();
 export const roundRemoved = createEvent<string>();
 export const roundNameChanged = createEvent<{ roundId: string; name: string }>();
+export const stageMoved = createEvent<{ stageId: string; direction: -1 | 1 }>();
+export const interRoundAdded = createEvent<InterRoundTemplateId>();
+export const interRoundRemoved = createEvent<string>();
+export const interRoundTitleChanged = createEvent<{ interRoundId: string; title: string }>();
+export const continueLyricsTaskAdded = createEvent<string>();
+export const continueLyricsTaskRemoved = createEvent<{ interRoundId: string; taskId: string }>();
+export const continueLyricsTaskChanged = createEvent<{ interRoundId: string; taskId: string; patch: Partial<Pick<Extract<InterRound, { templateId: 'continueLyrics' }>['tasks'][number], 'trackId' | 'requiredWordsCount' | 'cutAtMs' | 'answerText'>> }>();
+export const commonThemeStageAdded = createEvent<string>();
+export const commonThemeStageRemoved = createEvent<{ interRoundId: string; stageId: string }>();
+export const commonThemeTrackChanged = createEvent<{ interRoundId: string; stageId: string; itemId: string; patch: Partial<Pick<Extract<InterRound, { templateId: 'commonTheme4' }>['stages'][number]['tracks'][number], 'trackId' | 'answerTitle' | 'answerArtist'>> }>();
+export const commonThemeChanged = createEvent<{ interRoundId: string; stageId: string; commonTheme: string }>();
+export const interRoundStarted = createEvent();
+export const interRoundAnswerRevealed = createEvent();
+export const commonThemeTrackAdvanced = createEvent();
+export const interRoundNextRequested = createEvent();
 export const categoryAdded = createEvent<{ roundId: string }>();
 export const categoryRemoved = createEvent<{ roundId: string; categoryId: string }>();
 export const categoryNameChanged = createEvent<{ roundId: string; categoryId: string; name: string }>();
@@ -63,22 +83,31 @@ export const teamAdded = createEvent();
 export const teamRemoved = createEvent<string>();
 export const teamChanged = createEvent<{ teamId: string; patch: Partial<Pick<Team, 'name' | 'color'>> }>();
 
-export const songAdded = createEvent<{ song: Song; audioAssets: AudioAsset[] }>();
+export const songAdded = createEvent<{ song: Song; mediaTracks: MediaTrack[]; audioAssets: AudioAsset[] }>();
+export const mediaTrackAdded = createEvent<{ track: MediaTrack; audioAsset: AudioAsset }>();
+export const mediaTrackChanged = createEvent<{ trackId: string; patch: Partial<Pick<MediaTrack, 'name'>> }>();
+export const mediaTrackAudioChanged = createEvent<{ trackId: string; audioAsset: AudioAsset }>();
+export const mediaTrackDeleteRequested = createEvent<string>();
 export const songChanged = createEvent<{ songId: string; patch: Partial<Pick<Song, 'artist' | 'title'>> }>();
 export const songDuplicated = createEvent<string>();
-export const songAudioChanged = createEvent<{
-  songId: string;
-  kind: 'minus' | 'plus';
-  asset?: AudioAsset;
-}>();
 export const songDeleteRequested = createEvent<string>();
-const songAudioChangeApplied = createEvent<{
+export const songTrackChanged = createEvent<{
   songId: string;
   kind: 'minus' | 'plus';
-  asset?: AudioAsset;
-  previousAudioId?: string;
-  removePrevious: boolean;
+  trackId?: string;
+  track?: MediaTrack;
+  audioAsset?: AudioAsset;
 }>();
+const mediaTrackAdditionApplied = createEvent<{ track: MediaTrack; audioAsset: AudioAsset }>();
+const mediaTrackAudioChangeApplied = createEvent<{ trackId: string; audioAsset: AudioAsset; removableAudioId?: string }>();
+const songTrackChangeApplied = createEvent<{
+  songId: string;
+  kind: 'minus' | 'plus';
+  trackId?: string;
+  track?: MediaTrack;
+  audioAsset?: AudioAsset;
+}>();
+const mediaTrackDeletionApplied = createEvent<{ trackId: string; removableAudioId?: string }>();
 const songDeletionApplied = createEvent<{ songId: string; removableAudioIds: string[] }>();
 const gameDeletionApplied = createEvent<{ gameId: string; nextActiveGameId: string | null }>();
 
@@ -118,6 +147,7 @@ export const $hydrated = createStore(false)
   .on(loadFx.fail, () => false);
 export const $games = createStore<GameConfig[]>([initialGame]);
 export const $songs = createStore<Song[]>([]);
+export const $mediaTracks = createStore<MediaTrack[]>([]);
 export const $audioAssets = createStore<AudioAsset[]>([]);
 export const $sessions = createStore<Record<string, GameSession>>({ [initialGame.id]: createSession(initialGame) });
 export const $activeGameId = createStore<string | null>(initialGame.id);
@@ -164,12 +194,12 @@ $songs
       return { ...next, updatedAt: Date.now() };
     });
   })
-  .on(songAudioChangeApplied, (songs, { songId, kind, asset }) =>
+  .on(songTrackChangeApplied, (songs, { songId, kind, trackId }) =>
     songs.map((song) =>
       song.id === songId
         ? {
             ...song,
-            [kind === 'minus' ? 'minusAudioId' : 'plusAudioId']: asset?.id,
+            [kind === 'minus' ? 'minusTrackId' : 'plusTrackId']: trackId,
             updatedAt: Date.now(),
           }
         : song,
@@ -178,22 +208,33 @@ $songs
   .on(songDeletionApplied, (songs, { songId }) => songs.filter((song) => song.id !== songId))
   .on(persistedStateImported, (_, state) => state.songs);
 
+$mediaTracks
+  .on(loadFx.doneData, (_, state) => state.mediaTracks)
+  .on(songAdded, (tracks, { mediaTracks }) => mergeById(tracks, mediaTracks))
+  .on(mediaTrackAdditionApplied, (tracks, { track }) => mergeById(tracks, [track]))
+  .on(mediaTrackChanged, (tracks, { trackId, patch }) => tracks.map((track) => {
+    if (track.id !== trackId) return track;
+    const name = patch.name ?? track.name;
+    if (!name.trim() || name.length > DATA_LIMITS.text.mediaTrackName) return track;
+    return { ...track, ...patch, updatedAt: Date.now() };
+  }))
+  .on(mediaTrackAudioChangeApplied, (tracks, { trackId, audioAsset }) => tracks.map((track) =>
+    track.id === trackId ? { ...track, audioId: audioAsset.id, updatedAt: Date.now() } : track,
+  ))
+  .on(songTrackChangeApplied, (tracks, { track }) => track ? mergeById(tracks, [track]) : tracks)
+  .on(mediaTrackDeletionApplied, (tracks, { trackId }) => tracks.filter((track) => track.id !== trackId))
+  .on(persistedStateImported, (_, state) => state.mediaTracks);
+
 $audioAssets
   .on(loadFx.doneData, (_, state) => state.audioAssets)
-  .on(songAdded, (assets, { audioAssets }) => {
-    const byId = new Map(assets.map((asset) => [asset.id, asset]));
-    audioAssets.forEach((asset) => byId.set(asset.id, asset));
-    return [...byId.values()];
+  .on(songAdded, (assets, { audioAssets }) => mergeAudioAssets(assets, audioAssets))
+  .on(mediaTrackAdditionApplied, (assets, { audioAsset }) => mergeAudioAssets(assets, [audioAsset]))
+  .on(mediaTrackAudioChangeApplied, (assets, { audioAsset, removableAudioId }) => {
+    const withoutOld = removableAudioId && removableAudioId !== audioAsset.id ? assets.filter((asset) => asset.id !== removableAudioId) : assets;
+    return mergeAudioAssets(withoutOld, [audioAsset]);
   })
-  .on(songAudioChangeApplied, (assets, { asset, previousAudioId, removePrevious }) => {
-    let next = removePrevious && previousAudioId ? assets.filter((item) => item.id !== previousAudioId) : assets;
-    if (asset && !next.some((item) => item.id === asset.id)) next = [...next, asset];
-    return next;
-  })
-  .on(songDeletionApplied, (assets, { removableAudioIds }) => {
-    const removable = new Set(removableAudioIds);
-    return removable.size > 0 ? assets.filter((asset) => !removable.has(asset.id)) : assets;
-  })
+  .on(songTrackChangeApplied, (assets, { audioAsset }) => audioAsset ? mergeAudioAssets(assets, [audioAsset]) : assets)
+  .on(mediaTrackDeletionApplied, (assets, { removableAudioId }) => removableAudioId ? assets.filter((asset) => asset.id !== removableAudioId) : assets)
   .on(persistedStateImported, (_, state) => state.audioAssets);
 
 $sessions
@@ -277,8 +318,9 @@ sample({
   filter: ({ game, sessions }, questionId) => {
     if (!game) return false;
     const session = sessions[game.id];
-    const round = game.rounds[session?.roundIndex ?? -1];
-    return Boolean(session && round?.categories.some((category) => category.questions.some((question) => question.id === questionId)) && !session.completedQuestionIds.includes(questionId));
+    if (!session) return false;
+    const round = getRoundForStage(game, getActiveStage(game, session));
+    return Boolean(round?.categories.some((category) => category.questions.some((question) => question.id === questionId)) && !session.completedQuestionIds.includes(questionId));
   },
   fn: ({ game, sessions }, questionId) => {
     const session = sessions[game!.id];
@@ -423,21 +465,127 @@ sample({
 });
 
 sample({
-  clock: nextRoundRequested,
+  clock: nextStageRequested,
   source: combine({ game: $activeGame, sessions: $sessions }),
-  filter: ({ game, sessions }) => Boolean(game && sessions[game.id] && sessions[game.id].roundIndex < game.rounds.length && isRoundComplete(game, sessions[game.id])),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    if (!session || session.stageIndex >= game.stages.length) return false;
+    const stage = getActiveStage(game, session);
+    return stage?.kind === 'round' ? isRoundComplete(game, session) : false;
+  },
   fn: ({ game, sessions }) => {
     const session = sessions[game!.id];
     return {
       ...sessions,
       [game!.id]: {
         ...session,
-        roundIndex: Math.min(session.roundIndex + 1, game!.rounds.length),
+        stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
         activeQuestionId: null,
+        interRound: null,
         awardedTeamId: null,
         answerRevealed: false,
         activeExcludedTeamIds: [],
         currentIncorrectTeamIds: [],
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundStarted,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    return Boolean(session && getActiveStage(game, session)?.kind === 'interRound');
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    const interRound = getInterRoundForStage(game!, getActiveStage(game!, session));
+    if (!interRound) return sessions;
+    return {
+      ...sessions,
+      [game!.id]: { ...session, started: true, interRound: { interRoundId: interRound.id, phase: 'play' as const, taskIndex: 0, trackIndex: 0 } },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: commonThemeTrackAdvanced,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    const interRound = session ? getInterRoundForStage(game, getActiveStage(game, session)) : null;
+    return Boolean(
+      session?.interRound?.phase === 'play'
+      && interRound?.templateId === 'commonTheme4'
+      && session.interRound.taskIndex < interRound.stages.length
+      && session.interRound.trackIndex < 4,
+    );
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        interRound: session.interRound
+          ? { ...session.interRound, trackIndex: Math.min(session.interRound.trackIndex + 1, 4) }
+          : null,
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundAnswerRevealed,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    if (session?.interRound?.phase !== 'play') return false;
+    const interRound = getInterRoundForStage(game, getActiveStage(game, session));
+    return interRound?.templateId === 'commonTheme4' ? session.interRound.trackIndex >= 4 : Boolean(interRound);
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return { ...sessions, [game!.id]: { ...session, interRound: session.interRound ? { ...session.interRound, phase: 'answer' as const } : null } };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundNextRequested,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    const interRound = session ? getInterRoundForStage(game, getActiveStage(game, session)) : null;
+    return Boolean(session?.interRound?.phase === 'answer' && interRound);
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    const interRound = getInterRoundForStage(game!, getActiveStage(game!, session))!;
+    const taskCount = getInterRoundAnswerStepCount(interRound);
+    const nextTaskIndex = (session.interRound?.taskIndex ?? 0) + 1;
+    if (nextTaskIndex < taskCount) {
+      return {
+        ...sessions,
+        [game!.id]: { ...session, interRound: { interRoundId: interRound.id, phase: 'play' as const, taskIndex: nextTaskIndex, trackIndex: 0 } },
+      };
+    }
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
+        completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
+        interRound: null,
       },
     };
   },
@@ -458,7 +606,10 @@ sample({
   clock: roundAdded,
   source: activeGameSource,
   filter: ({ game }) => Boolean(game && game.rounds.length < GAME_LIMITS.rounds),
-  fn: ({ game }) => touchGame({ ...game!, rounds: [...game!.rounds, createRound(game!.rounds.length)] }),
+  fn: ({ game }) => {
+    const round = createRound(game!.rounds.length);
+    return touchGame({ ...game!, rounds: [...game!.rounds, round], stages: [...game!.stages, createRoundStage(round.id)] });
+  },
   target: gameConfigUpdated,
 });
 
@@ -466,7 +617,11 @@ sample({
   clock: roundRemoved,
   source: activeGameSource,
   filter: ({ game }, roundId) => Boolean(game && game.rounds.length > 1 && game.rounds.some((round) => round.id === roundId)),
-  fn: ({ game }, roundId) => touchGame({ ...game!, rounds: game!.rounds.filter((round) => round.id !== roundId) }),
+  fn: ({ game }, roundId) => touchGame({
+    ...game!,
+    rounds: game!.rounds.filter((round) => round.id !== roundId),
+    stages: game!.stages.filter((stage) => stage.kind !== 'round' || stage.roundId !== roundId),
+  }),
   target: gameConfigUpdated,
 });
 
@@ -477,6 +632,170 @@ sample({
   fn: ({ game }, payload) => touchGame({
     ...game!,
     rounds: game!.rounds.map((round) => (round.id === payload.roundId ? { ...round, name: payload.name } : round)),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: stageMoved,
+  source: activeGameSource,
+  filter: ({ game }, { stageId, direction }) => {
+    if (!game) return false;
+    const index = game.stages.findIndex((stage) => stage.id === stageId);
+    const nextIndex = index + direction;
+    return index >= 0 && nextIndex >= 0 && nextIndex < game.stages.length;
+  },
+  fn: ({ game }, { stageId, direction }) => {
+    const stages = [...game!.stages];
+    const index = stages.findIndex((stage) => stage.id === stageId);
+    const nextIndex = index + direction;
+    [stages[index], stages[nextIndex]] = [stages[nextIndex], stages[index]];
+    return touchGame({ ...game!, stages });
+  },
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: interRoundAdded,
+  source: activeGameSource,
+  filter: ({ game }) => Boolean(game && game.interRounds.length < GAME_LIMITS.interRounds),
+  fn: ({ game }, templateId) => {
+    const interRound = createInterRound(templateId, game!.interRounds.filter((item) => item.templateId === templateId).length);
+    return touchGame({
+      ...game!,
+      interRounds: [...game!.interRounds, interRound],
+      stages: [...game!.stages, createInterRoundStage(interRound.id)],
+    });
+  },
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: interRoundRemoved,
+  source: activeGameSource,
+  filter: ({ game }, interRoundId) => Boolean(game?.interRounds.some((item) => item.id === interRoundId)),
+  fn: ({ game }, interRoundId) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.filter((item) => item.id !== interRoundId),
+    stages: game!.stages.filter((stage) => stage.kind !== 'interRound' || stage.interRoundId !== interRoundId),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: interRoundTitleChanged,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, title }) => Boolean(game && title.length <= DATA_LIMITS.text.interRoundTitle && game.interRounds.some((item) => item.id === interRoundId)),
+  fn: ({ game }, { interRoundId, title }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId ? { ...item, title } : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: continueLyricsTaskAdded,
+  source: activeGameSource,
+  filter: ({ game }, interRoundId) => Boolean(game?.interRounds.some((item) => item.id === interRoundId && item.templateId === 'continueLyrics' && item.tasks.length < GAME_LIMITS.continueLyricsTasks)),
+  fn: ({ game }, interRoundId) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'continueLyrics'
+      ? { ...item, tasks: [...item.tasks, createContinueLyricsTask()] }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: continueLyricsTaskRemoved,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, taskId }) => Boolean(game?.interRounds.some((item) => item.id === interRoundId && item.templateId === 'continueLyrics' && item.tasks.length > 1 && item.tasks.some((task) => task.id === taskId))),
+  fn: ({ game }, { interRoundId, taskId }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'continueLyrics'
+      ? { ...item, tasks: item.tasks.filter((task) => task.id !== taskId) }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: continueLyricsTaskChanged,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, taskId, patch }) => Boolean(game
+    && game.interRounds.some((item) => item.id === interRoundId && item.templateId === 'continueLyrics' && item.tasks.some((task) => task.id === taskId))
+    && (patch.answerText === undefined || patch.answerText.length <= DATA_LIMITS.text.interRoundAnswer)
+    && (patch.trackId === undefined || patch.trackId.length <= DATA_LIMITS.text.id)
+    && (patch.requiredWordsCount === undefined || (Number.isSafeInteger(patch.requiredWordsCount) && patch.requiredWordsCount >= 1 && patch.requiredWordsCount <= 100))
+    && (patch.cutAtMs === undefined || (Number.isSafeInteger(patch.cutAtMs) && patch.cutAtMs >= 500 && patch.cutAtMs <= 21_600_000))),
+  fn: ({ game }, { interRoundId, taskId, patch }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'continueLyrics'
+      ? { ...item, tasks: item.tasks.map((task) => task.id === taskId ? { ...task, ...patch } : task) }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: commonThemeStageAdded,
+  source: activeGameSource,
+  filter: ({ game }, interRoundId) => Boolean(game && game.interRounds.some((item) => item.id === interRoundId && item.templateId === 'commonTheme4' && item.stages.length < GAME_LIMITS.commonThemeStages)),
+  fn: ({ game }, interRoundId) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'commonTheme4'
+      ? { ...item, stages: [...item.stages, createCommonThemeStage()] }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: commonThemeStageRemoved,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, stageId }) => Boolean(game && game.interRounds.some((item) => item.id === interRoundId && item.templateId === 'commonTheme4' && item.stages.length > 1 && item.stages.some((stage) => stage.id === stageId))),
+  fn: ({ game }, { interRoundId, stageId }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'commonTheme4'
+      ? { ...item, stages: item.stages.filter((stage) => stage.id !== stageId) }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: commonThemeTrackChanged,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, stageId, itemId, patch }) => Boolean(game
+    && game.interRounds.some((item) => item.id === interRoundId && item.templateId === 'commonTheme4' && item.stages.some((stage) => stage.id === stageId && stage.tracks.some((track) => track.id === itemId)))
+    && (patch.answerTitle === undefined || patch.answerTitle.length <= DATA_LIMITS.text.songTitle)
+    && (patch.answerArtist === undefined || patch.answerArtist.length <= DATA_LIMITS.text.artist)
+    && (patch.trackId === undefined || patch.trackId.length <= DATA_LIMITS.text.id)),
+  fn: ({ game }, { interRoundId, stageId, itemId, patch }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'commonTheme4'
+      ? {
+          ...item,
+          stages: item.stages.map((stage) => stage.id === stageId
+            ? { ...stage, tracks: stage.tracks.map((track) => track.id === itemId ? { ...track, ...patch } : track) as typeof stage.tracks }
+            : stage),
+        }
+      : item),
+  }),
+  target: gameConfigUpdated,
+});
+
+sample({
+  clock: commonThemeChanged,
+  source: activeGameSource,
+  filter: ({ game }, { interRoundId, stageId, commonTheme }) => Boolean(game
+    && commonTheme.length <= DATA_LIMITS.text.commonTheme
+    && game.interRounds.some((item) => item.id === interRoundId && item.templateId === 'commonTheme4' && item.stages.some((stage) => stage.id === stageId))),
+  fn: ({ game }, { interRoundId, stageId, commonTheme }) => touchGame({
+    ...game!,
+    interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'commonTheme4'
+      ? { ...item, stages: item.stages.map((stage) => stage.id === stageId ? { ...stage, commonTheme } : stage) }
+      : item),
   }),
   target: gameConfigUpdated,
 });
@@ -643,46 +962,94 @@ sample({
 });
 
 sample({
-  clock: songAudioChanged,
-  source: $songs,
-  filter: (songs, { songId, asset }) => songs.some((song) => song.id === songId) && (!asset || (asset.id === asset.sha256 && isSha256(asset.id) && asset.verified === true && asset.blob instanceof Blob && asset.blob.size > 0)),
-  fn: (songs, payload) => {
-    const current = songs.find((song) => song.id === payload.songId)!;
-    const previousAudioId = payload.kind === 'minus' ? current.minusAudioId : current.plusAudioId;
-    const usedByAnotherReference = previousAudioId
-      ? songs.some((song) => {
-          if (song.id !== payload.songId) return song.minusAudioId === previousAudioId || song.plusAudioId === previousAudioId;
-          return payload.kind === 'minus' ? song.plusAudioId === previousAudioId : song.minusAudioId === previousAudioId;
-        })
-      : false;
-    return { ...payload, previousAudioId, removePrevious: Boolean(previousAudioId && !usedByAnotherReference) };
+  clock: mediaTrackAdded,
+  filter: ({ track, audioAsset }) => track.name.trim().length > 0
+    && track.name.length <= DATA_LIMITS.text.mediaTrackName
+    && track.audioId === audioAsset.id
+    && audioAsset.id === audioAsset.sha256
+    && isSha256(audioAsset.id)
+    && audioAsset.verified === true
+    && audioAsset.blob instanceof Blob
+    && audioAsset.blob.size > 0,
+  target: mediaTrackAdditionApplied,
+});
+
+sample({
+  clock: mediaTrackAudioChanged,
+  source: $mediaTracks,
+  filter: (tracks, { trackId, audioAsset }) => tracks.some((track) => track.id === trackId)
+    && audioAsset.id === audioAsset.sha256
+    && isSha256(audioAsset.id)
+    && audioAsset.verified === true
+    && audioAsset.blob instanceof Blob
+    && audioAsset.blob.size > 0,
+  fn: (tracks, { trackId, audioAsset }) => {
+    const current = tracks.find((track) => track.id === trackId)!;
+    const removableAudioId = current.audioId !== audioAsset.id
+      && !tracks.some((track) => track.id !== trackId && track.audioId === current.audioId)
+      ? current.audioId
+      : undefined;
+    return { trackId, audioAsset, removableAudioId };
   },
-  target: songAudioChangeApplied,
+  target: mediaTrackAudioChangeApplied,
+});
+
+sample({
+  clock: songTrackChanged,
+  source: combine({ songs: $songs, mediaTracks: $mediaTracks }),
+  filter: ({ songs, mediaTracks }, payload) => {
+    if (!songs.some((song) => song.id === payload.songId)) return false;
+    if (!payload.trackId && !payload.track) return true;
+    if (payload.track) {
+      return payload.track.id === (payload.trackId ?? payload.track.id)
+        && payload.track.name.trim().length > 0
+        && payload.track.name.length <= DATA_LIMITS.text.mediaTrackName
+        && payload.audioAsset?.id === payload.track.audioId
+        && payload.audioAsset.id === payload.audioAsset.sha256
+        && isSha256(payload.audioAsset.id)
+        && payload.audioAsset.verified === true
+        && payload.audioAsset.blob instanceof Blob
+        && payload.audioAsset.blob.size > 0;
+    }
+    return mediaTracks.some((track) => track.id === payload.trackId);
+  },
+  fn: (_, payload) => ({ ...payload, trackId: payload.trackId ?? payload.track?.id }),
+  target: songTrackChangeApplied,
+});
+
+sample({
+  clock: mediaTrackDeleteRequested,
+  source: combine({ songs: $songs, mediaTracks: $mediaTracks, games: $games }),
+  filter: ({ songs, mediaTracks, games }, trackId) => mediaTracks.some((track) => track.id === trackId)
+    && !songs.some((song) => song.minusTrackId === trackId || song.plusTrackId === trackId)
+    && !games.some((game) => game.interRounds.some((interRound) => getInterRoundTrackIds(interRound).includes(trackId))),
+  fn: ({ mediaTracks }, trackId) => {
+    const track = mediaTracks.find((item) => item.id === trackId)!;
+    const removableAudioId = mediaTracks.some((other) => other.id !== trackId && other.audioId === track.audioId)
+      ? undefined
+      : track.audioId;
+    return { trackId, removableAudioId };
+  },
+  target: mediaTrackDeletionApplied,
 });
 
 sample({
   clock: songDeleteRequested,
   source: $songs,
   filter: (songs, songId) => songs.some((song) => song.id === songId),
-  fn: (songs, songId) => {
-    const song = songs.find((item) => item.id === songId)!;
-    const candidates = [song.minusAudioId, song.plusAudioId].filter((id): id is string => Boolean(id));
-    const removableAudioIds = candidates.filter((audioId) => !songs.some(
-      (other) => other.id !== songId && (other.minusAudioId === audioId || other.plusAudioId === audioId),
-    ));
-    return { songId, removableAudioIds };
-  },
+  fn: (_, songId) => ({ songId, removableAudioIds: [] }),
   target: songDeletionApplied,
 });
 
 export const $persistedState = combine(
-  { games: $games, songs: $songs, audioAssets: $audioAssets, sessions: $sessions, activeGameId: $activeGameId },
-  ({ games, songs, audioAssets, sessions, activeGameId }): PersistedState => {
-    const usedAudioIds = new Set(songs.flatMap((song) => [song.minusAudioId, song.plusAudioId].filter((id): id is string => Boolean(id))));
+  { games: $games, songs: $songs, mediaTracks: $mediaTracks, audioAssets: $audioAssets, sessions: $sessions, activeGameId: $activeGameId },
+  ({ games, songs, mediaTracks, audioAssets, sessions, activeGameId }): PersistedState => {
+    const usedAudioIds = new Set(mediaTracks.map((track) => track.audioId));
     return {
-      version: 2,
+      version: 4,
       games,
       songs,
+      mediaTracks,
       audioAssets: audioAssets.filter((asset) => usedAudioIds.has(asset.id)),
       sessions: Object.values(sessions),
       activeGameId,
@@ -742,32 +1109,48 @@ if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', flushPendingSave);
 }
 
-export const $activeRound = combine($activeGame, $session, (game, session) =>
-  game && session ? game.rounds[session.roundIndex] ?? null : null,
+export const $activeStage = combine($activeGame, $session, (game, session) =>
+  game && session ? getActiveStage(game, session) : null,
+);
+
+export const $activeRound = combine($activeGame, $activeStage, (game, stage) =>
+  game ? getRoundForStage(game, stage) : null,
+);
+
+export const $activeInterRound = combine($activeGame, $activeStage, (game, stage) =>
+  game ? getInterRoundForStage(game, stage) : null,
+);
+
+export const $activeRoundOrdinal = combine($activeGame, $session, (game, session) =>
+  game && session ? getRoundOrdinal(game, session.stageIndex) : 1,
 );
 
 export const $activeQuestion = combine(
-  { game: $activeGame, session: $session, songs: $songs, audioAssets: $audioAssets },
-  ({ game, session, songs, audioAssets }): PlayableQuestion | null => {
+  { game: $activeGame, session: $session, songs: $songs, mediaTracks: $mediaTracks, audioAssets: $audioAssets },
+  ({ game, session, songs, mediaTracks, audioAssets }): PlayableQuestion | null => {
     if (!game || !session?.activeQuestionId) return null;
     const question = findQuestion(game, session.activeQuestionId);
-    return question ? resolveQuestion(question, songs, audioAssets) : null;
+    return question ? resolveQuestion(question, songs, mediaTracks, audioAssets) : null;
   },
 );
 
 export const $isGameFinished = combine($activeGame, $session, (game, session) =>
-  Boolean(game && session && session.roundIndex >= game.rounds.length),
+  Boolean(game && session && session.stageIndex >= game.stages.length),
 );
 
 export { isRoundComplete };
 
-export const resolveQuestion = (question: Question, songs: Song[], audioAssets: AudioAsset[]): PlayableQuestion => {
+export const resolveQuestion = (question: Question, songs: Song[], mediaTracks: MediaTrack[], audioAssets: AudioAsset[]): PlayableQuestion => {
   const song = question.songId ? songs.find((item) => item.id === question.songId) : undefined;
+  const minusTrack = song?.minusTrackId ? mediaTracks.find((track) => track.id === song.minusTrackId) : undefined;
+  const plusTrack = song?.plusTrackId ? mediaTracks.find((track) => track.id === song.plusTrackId) : undefined;
   return {
     ...question,
     song,
-    minus: song?.minusAudioId ? audioAssets.find((asset) => asset.id === song.minusAudioId) : undefined,
-    plus: song?.plusAudioId ? audioAssets.find((asset) => asset.id === song.plusAudioId) : undefined,
+    minusTrack,
+    plusTrack,
+    minus: minusTrack ? audioAssets.find((asset) => asset.id === minusTrack.audioId) : undefined,
+    plus: plusTrack ? audioAssets.find((asset) => asset.id === plusTrack.audioId) : undefined,
   };
 };
 
@@ -793,10 +1176,25 @@ export const hasSessionProgress = (session?: GameSession | null) =>
       (session.started ||
         session.completedQuestionIds.length > 0 ||
         Object.values(session.scores).some((score) => score !== 0) ||
-        session.roundIndex > 0),
+        session.stageIndex > 0 ||
+        session.completedInterRoundIds.length > 0),
   );
 
 
+
+function mergeAudioAssets(current: AudioAsset[], additions: AudioAsset[]) {
+  if (additions.length === 0) return current;
+  const byId = new Map(current.map((asset) => [asset.id, asset]));
+  for (const asset of additions) if (!byId.has(asset.id)) byId.set(asset.id, asset);
+  return [...byId.values()];
+}
+
+function mergeById<T extends { id: string }>(current: T[], additions: T[]) {
+  if (additions.length === 0) return current;
+  const byId = new Map(current.map((item) => [item.id, item]));
+  additions.forEach((item) => byId.set(item.id, item));
+  return [...byId.values()];
+}
 
 function updateQuestion(
   state: GameConfig,

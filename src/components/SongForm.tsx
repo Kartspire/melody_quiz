@@ -1,32 +1,57 @@
-import { useState } from 'react';
-import { createAudioAsset, createSong } from '../model/defaults';
+import { useMemo, useState } from 'react';
+import { useUnit } from 'effector-react';
+import { createAudioAsset, createMediaTrack, createSong } from '../model/defaults';
 import { DATA_LIMITS } from '../model/limits';
-import { songAdded } from '../model/game';
+import { $mediaTracks, songAdded } from '../model/game';
+import type { AudioAsset, MediaTrack } from '../model/types';
 
 export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?: (songId: string) => void; onCancel?: () => void; compact?: boolean }) {
+  const mediaTracks = useUnit($mediaTracks);
   const [artist, setArtist] = useState('');
   const [title, setTitle] = useState('');
   const [minusFile, setMinusFile] = useState<File>();
   const [plusFile, setPlusFile] = useState<File>();
+  const [minusTrackId, setMinusTrackId] = useState('');
+  const [plusTrackId, setPlusTrackId] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
 
   const submit = async () => {
     if ((!artist.trim() && !title.trim()) || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const [minus, plus] = await Promise.all([
-        minusFile ? createAudioAsset(minusFile) : Promise.resolve(undefined),
-        plusFile ? createAudioAsset(plusFile) : Promise.resolve(undefined),
+      const newTracks: MediaTrack[] = [];
+      const newAssets: AudioAsset[] = [];
+
+      const resolveRole = async (kind: 'minus' | 'plus', existingTrackId: string, file?: File) => {
+        if (file) {
+          const asset = await createAudioAsset(file);
+          const role = kind === 'minus' ? 'минус' : 'плюс';
+          const label = [artist.trim(), title.trim()].filter(Boolean).join(' — ');
+          const track = createMediaTrack(asset, label ? `${label} (${role})` : file.name);
+          newAssets.push(asset);
+          newTracks.push(track);
+          return track;
+        }
+        return existingTrackId ? trackById.get(existingTrackId) : undefined;
+      };
+
+      const [minusTrack, plusTrack] = await Promise.all([
+        resolveRole('minus', minusTrackId, minusFile),
+        resolveRole('plus', plusTrackId, plusFile),
       ]);
-      const song = createSong({ artist, title, minus, plus });
-      songAdded({ song, audioAssets: [minus, plus].filter((asset) => asset !== undefined) });
+      const song = createSong({ artist, title, minusTrack, plusTrack });
+      songAdded({ song, mediaTracks: newTracks, audioAssets: newAssets });
       onCreated?.(song.id);
       setArtist('');
       setTitle('');
       setMinusFile(undefined);
       setPlusFile(undefined);
+      setMinusTrackId('');
+      setPlusTrackId('');
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : 'Не удалось добавить песню.');
     } finally {
@@ -45,8 +70,22 @@ export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?:
           <span>Название песни</span>
           <input maxLength={DATA_LIMITS.text.songTitle} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Например: Группа крови" />
         </label>
-        <FileField label="Минус" file={minusFile} onChange={setMinusFile} />
-        <FileField label="Плюс" file={plusFile} onChange={setPlusFile} />
+        <TrackField
+          label="Минус"
+          tracks={mediaTracks}
+          selectedTrackId={minusTrackId}
+          file={minusFile}
+          onTrackChange={(trackId) => { setMinusTrackId(trackId); if (trackId) setMinusFile(undefined); }}
+          onFileChange={(file) => { setMinusFile(file); if (file) setMinusTrackId(''); }}
+        />
+        <TrackField
+          label="Плюс"
+          tracks={mediaTracks}
+          selectedTrackId={plusTrackId}
+          file={plusFile}
+          onTrackChange={(trackId) => { setPlusTrackId(trackId); if (trackId) setPlusFile(undefined); }}
+          onFileChange={(file) => { setPlusFile(file); if (file) setPlusTrackId(''); }}
+        />
       </div>
       {error && <p className="missing-audio" role="alert">{error}</p>}
       <div className="inline-actions">
@@ -57,23 +96,41 @@ export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?:
   );
 }
 
-function FileField({ label, file, onChange }: { label: string; file?: File; onChange: (file?: File) => void }) {
+function TrackField({
+  label,
+  tracks,
+  selectedTrackId,
+  file,
+  onTrackChange,
+  onFileChange,
+}: {
+  label: string;
+  tracks: MediaTrack[];
+  selectedTrackId: string;
+  file?: File;
+  onTrackChange: (trackId: string) => void;
+  onFileChange: (file?: File) => void;
+}) {
   return (
-    <div className="audio-upload">
+    <div className="audio-upload song-track-picker">
       <span>{label}</span>
+      <select value={selectedTrackId} disabled={Boolean(file)} onChange={(event) => onTrackChange(event.target.value)}>
+        <option value="">Не выбран из аудио</option>
+        {tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
+      </select>
       <label className={file ? 'file-picker file-picker--ready' : 'file-picker'}>
         <input
           type="file"
           accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4"
           onChange={(event) => {
-            onChange(event.target.files?.[0]);
+            onFileChange(event.target.files?.[0]);
             event.currentTarget.value = '';
           }}
         />
-        <span className="file-picker__title">{file ? '✓ Выбран' : 'Загрузить'}</span>
+        <span className="file-picker__title">{file ? '✓ Новый файл выбран' : 'Или загрузить новый файл'}</span>
         <small title={file?.name}>{file?.name ?? 'MP3, WAV, OGG, FLAC, M4A…'}</small>
       </label>
-      {file && <button className="remove-file" onClick={() => onChange(undefined)}>Убрать</button>}
+      {file && <button className="remove-file" onClick={() => onFileChange(undefined)}>Убрать файл</button>}
     </div>
   );
 }

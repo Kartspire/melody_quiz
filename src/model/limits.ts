@@ -3,6 +3,9 @@ export const GAME_LIMITS = {
   categoriesPerRound: 100,
   questionsPerCategory: 100,
   teams: 32,
+  interRounds: 20,
+  continueLyricsTasks: 50,
+  commonThemeStages: 50,
 } as const;
 
 export const DATA_LIMITS = {
@@ -11,8 +14,10 @@ export const DATA_LIMITS = {
   manifestBytes: 2 * 1024 * 1024,
   gameJsonBytes: 10 * 1024 * 1024,
   songsJsonBytes: 20 * 1024 * 1024,
+  tracksJsonBytes: 20 * 1024 * 1024,
   packageFiles: 20_000,
   packageSongs: 10_000,
+  packageTracks: 20_000,
   text: {
     gameTitle: 200,
     roundName: 200,
@@ -20,6 +25,10 @@ export const DATA_LIMITS = {
     teamName: 100,
     artist: 300,
     songTitle: 300,
+    mediaTrackName: 300,
+    interRoundTitle: 200,
+    interRoundAnswer: 1000,
+    commonTheme: 500,
     audioName: 255,
     mimeType: 120,
     id: 200,

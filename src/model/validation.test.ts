@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, createSession } from './defaults';
+import { createGame, createInterRoundStage, createSession } from './defaults';
+import { createCommonTheme4InterRound, createContinueLyricsInterRound } from '../interRounds/templates';
 import { assertValidGameStructure, assertValidPersistedState, getGameStartIssues, getSessionContinuationIssues } from './validation';
-import type { PersistedState, Song } from './types';
+import type { CommonThemeStage, PersistedState, Song } from './types';
 
-const emptyState = (): PersistedState => ({ version: 2, games: [], songs: [], audioAssets: [], sessions: [], activeGameId: null });
+const emptyState = (): PersistedState => ({ version: 4, games: [], songs: [], mediaTracks: [], audioAssets: [], sessions: [], activeGameId: null });
 
 describe('game validation', () => {
   it('rejects game structures that the editor must not import', () => {
@@ -41,11 +42,36 @@ describe('game validation', () => {
     const song: Song = { id: 'song-1', artist: 'Исполнитель', title: 'Песня', createdAt: now, updatedAt: now };
     question.songId = song.id;
 
-    expect(getGameStartIssues(game, [song], []).some((issue) => issue.includes('минус'))).toBe(true);
+    expect(getGameStartIssues(game, [song], [], []).some((issue) => issue.includes('минус'))).toBe(true);
     const session = createSession(game);
     session.completedQuestionIds = [question.id];
     // Other unassigned questions still produce issues, but the completed song must not.
-    const issues = getSessionContinuationIssues(game, session, [song], []);
+    const issues = getSessionContinuationIssues(game, session, [song], [], []);
     expect(issues.some((issue) => issue.includes('вопрос 1') && issue.includes('минус'))).toBe(false);
   });
+
+  it('validates the specific configuration required by each inter-round template', () => {
+    const game = createGame('Тест');
+    const lyrics = createContinueLyricsInterRound();
+    game.interRounds = [lyrics];
+    game.stages.push(createInterRoundStage(lyrics.id));
+    expect(() => assertValidGameStructure(game)).toThrow(/аудиотрек/i);
+
+    lyrics.tasks[0].trackId = 'track-lyrics';
+    lyrics.tasks[0].answerText = 'пять следующих слов ответа';
+    expect(() => assertValidGameStructure(game)).not.toThrow();
+
+    const commonTheme = createCommonTheme4InterRound();
+    commonTheme.stages[0].commonTheme = 'Лето';
+    commonTheme.stages[0].tracks = commonTheme.stages[0].tracks.map((track, index) => ({
+      ...track,
+      trackId: `track-${index + 1}`,
+      answerArtist: `Исполнитель ${index + 1}`,
+      answerTitle: `Песня ${index + 1}`,
+    })) as CommonThemeStage['tracks'];
+    game.interRounds = [commonTheme];
+    game.stages = [game.stages[0], createInterRoundStage(commonTheme.id)];
+    expect(() => assertValidGameStructure(game)).not.toThrow();
+  });
+
 });

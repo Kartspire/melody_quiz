@@ -1,8 +1,19 @@
 import { DATA_LIMITS, GAME_LIMITS } from './limits';
-import type { AudioAsset, GameConfig, GameSession, PersistedState, Song } from './types';
+import { getInterRoundTrackIds } from '../interRounds/templates';
+import type {
+  AudioAsset,
+  GameConfig,
+  GameSession,
+  InterRound,
+  MediaTrack,
+  PersistedState,
+  Song,
+} from './types';
 
 const MIN_DATE = Date.UTC(2000, 0, 1);
 const MAX_DATE = Date.UTC(2100, 0, 1);
+const MAX_CUT_AT_MS = 6 * 60 * 60 * 1000;
+const MAX_REQUIRED_WORDS = 100;
 
 export function assertValidGameStructure(game: GameConfig): void {
   const issues = getGameStructureIssues(game);
@@ -10,89 +21,14 @@ export function assertValidGameStructure(game: GameConfig): void {
 }
 
 export function getGameStructureIssues(config: GameConfig): string[] {
-  const issues: string[] = [];
-  const ids = new Set<string>();
-  const takeId = (id: unknown, label: string) => {
-    if (!isBoundedText(id, DATA_LIMITS.text.id)) {
-      issues.push(`${label}: отсутствует корректный id.`);
-      return;
-    }
-    if (ids.has(id)) issues.push(`${label}: id «${id}» повторяется.`);
-    ids.add(id);
-  };
-
-  if (!config || typeof config !== 'object') return ['Игра отсутствует или имеет неверный формат.'];
-  takeId(config.id, 'Игра');
-  if (!isBoundedText(config.title, DATA_LIMITS.text.gameTitle) || !config.title.trim()) issues.push('Не задано корректное название игры.');
-  if (!isValidTimestamp(config.createdAt) || !isValidTimestamp(config.updatedAt)) issues.push('Некорректная дата создания или изменения игры.');
-
-  if (!Array.isArray(config.rounds) || config.rounds.length < 1 || config.rounds.length > GAME_LIMITS.rounds) {
-    issues.push(`В игре должно быть от 1 до ${GAME_LIMITS.rounds} раундов.`);
-    return issues;
-  }
-  if (!Array.isArray(config.teams) || config.teams.length < 1 || config.teams.length > GAME_LIMITS.teams) {
-    issues.push(`В игре должно быть от 1 до ${GAME_LIMITS.teams} команд.`);
-    return issues;
-  }
-
-  const teamNames = new Set<string>();
-  const teamColors = new Set<string>();
-  config.teams.forEach((team, teamIndex) => {
-    takeId(team?.id, `Команда ${teamIndex + 1}`);
-    if (!isBoundedText(team?.name, DATA_LIMITS.text.teamName) || !team.name.trim()) {
-      issues.push(`Команда ${teamIndex + 1}: не задано корректное название.`);
-    } else {
-      const normalized = normalizeText(team.name);
-      if (teamNames.has(normalized)) issues.push(`Команда ${teamIndex + 1}: название «${team.name.trim()}» уже используется.`);
-      teamNames.add(normalized);
-    }
-    const color = typeof team?.color === 'string' ? team.color.toLowerCase() : '';
-    if (!/^#[0-9a-f]{6}$/.test(color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
-    else if (teamColors.has(color)) issues.push(`Команда ${teamIndex + 1}: этот цвет уже используется другой командой.`);
-    if (color) teamColors.add(color);
-  });
-
-  config.rounds.forEach((round, roundIndex) => {
-    takeId(round?.id, `Раунд ${roundIndex + 1}`);
-    if (!isBoundedText(round?.name, DATA_LIMITS.text.roundName) || !round.name.trim()) issues.push(`Раунд ${roundIndex + 1}: не задано корректное название.`);
-    if (!Array.isArray(round?.categories) || round.categories.length < 1 || round.categories.length > GAME_LIMITS.categoriesPerRound) {
-      issues.push(`Раунд ${roundIndex + 1}: должно быть от 1 до ${GAME_LIMITS.categoriesPerRound} категорий.`);
-      return;
-    }
-
-    round.categories.forEach((category, categoryIndex) => {
-      takeId(category?.id, `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}`);
-      if (!isBoundedText(category?.name, DATA_LIMITS.text.categoryName) || !category.name.trim()) {
-        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: не задано корректное название.`);
-      }
-      if (!Array.isArray(category?.questions) || category.questions.length < 1 || category.questions.length > GAME_LIMITS.questionsPerCategory) {
-        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: должно быть от 1 до ${GAME_LIMITS.questionsPerCategory} вопросов.`);
-        return;
-      }
-
-      const usedPoints = new Set<number>();
-      category.questions.forEach((question, questionIndex) => {
-        const prefix = `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}, вопрос ${questionIndex + 1}`;
-        takeId(question?.id, prefix);
-        if (!Number.isSafeInteger(question?.points) || question.points <= 0 || question.points > DATA_LIMITS.maxQuestionPoints) {
-          issues.push(`${prefix}: стоимость должна быть целым числом от 1 до ${DATA_LIMITS.maxQuestionPoints}.`);
-        } else if (usedPoints.has(question.points)) {
-          issues.push(`${prefix}: стоимость ${question.points} уже используется в этой категории.`);
-        } else {
-          usedPoints.add(question.points);
-        }
-        if (question?.songId !== undefined && !isBoundedText(question.songId, DATA_LIMITS.text.id)) {
-          issues.push(`${prefix}: некорректная ссылка на песню.`);
-        }
-      });
-    });
-  });
-
-  return issues;
+  return collectGameIssues(config, true);
 }
 
-
 export function getGameStorageIssues(config: GameConfig): string[] {
+  return collectGameIssues(config, false);
+}
+
+function collectGameIssues(config: GameConfig, strict: boolean): string[] {
   const issues: string[] = [];
   const ids = new Set<string>();
   const takeId = (id: unknown, label: string) => {
@@ -106,55 +42,175 @@ export function getGameStorageIssues(config: GameConfig): string[] {
 
   if (!config || typeof config !== 'object') return ['Игра отсутствует или имеет неверный формат.'];
   takeId(config.id, 'Игра');
-  if (!isBoundedText(config.title, DATA_LIMITS.text.gameTitle)) issues.push('Название игры имеет некорректный формат или слишком большую длину.');
+  if (!isBoundedText(config.title, DATA_LIMITS.text.gameTitle) || (strict && !config.title.trim())) issues.push('Не задано корректное название игры.');
   if (!isValidTimestamp(config.createdAt) || !isValidTimestamp(config.updatedAt)) issues.push('Некорректная дата создания или изменения игры.');
-  if (!Array.isArray(config.teams) || config.teams.length < 1 || config.teams.length > GAME_LIMITS.teams) {
-    issues.push(`В игре должно быть от 1 до ${GAME_LIMITS.teams} команд.`);
-    return issues;
-  }
+
   if (!Array.isArray(config.rounds) || config.rounds.length < 1 || config.rounds.length > GAME_LIMITS.rounds) {
     issues.push(`В игре должно быть от 1 до ${GAME_LIMITS.rounds} раундов.`);
     return issues;
   }
+  if (!Array.isArray(config.interRounds) || config.interRounds.length > GAME_LIMITS.interRounds) {
+    issues.push(`В игре может быть не больше ${GAME_LIMITS.interRounds} межраундов.`);
+    return issues;
+  }
+  if (!Array.isArray(config.stages) || config.stages.length !== config.rounds.length + config.interRounds.length || config.stages.length === 0) {
+    issues.push('Последовательность этапов игры повреждена.');
+    return issues;
+  }
+  if (!Array.isArray(config.teams) || config.teams.length < 1 || config.teams.length > GAME_LIMITS.teams) {
+    issues.push(`В игре должно быть от 1 до ${GAME_LIMITS.teams} команд.`);
+    return issues;
+  }
 
+  const teamNames = new Set<string>();
+  const teamColors = new Set<string>();
   config.teams.forEach((team, teamIndex) => {
     takeId(team?.id, `Команда ${teamIndex + 1}`);
-    if (!isBoundedText(team?.name, DATA_LIMITS.text.teamName)) issues.push(`Команда ${teamIndex + 1}: слишком длинное или некорректное название.`);
-    if (typeof team?.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(team.color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
+    if (!isBoundedText(team?.name, DATA_LIMITS.text.teamName) || (strict && !team.name.trim())) {
+      issues.push(`Команда ${teamIndex + 1}: не задано корректное название.`);
+    } else if (strict) {
+      const normalized = normalizeText(team.name);
+      if (teamNames.has(normalized)) issues.push(`Команда ${teamIndex + 1}: название «${team.name.trim()}» уже используется.`);
+      teamNames.add(normalized);
+    }
+    const color = typeof team?.color === 'string' ? team.color.toLowerCase() : '';
+    if (!/^#[0-9a-f]{6}$/.test(color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
+    else if (strict && teamColors.has(color)) issues.push(`Команда ${teamIndex + 1}: этот цвет уже используется другой командой.`);
+    if (color) teamColors.add(color);
   });
 
   config.rounds.forEach((round, roundIndex) => {
     takeId(round?.id, `Раунд ${roundIndex + 1}`);
-    if (!isBoundedText(round?.name, DATA_LIMITS.text.roundName)) issues.push(`Раунд ${roundIndex + 1}: слишком длинное или некорректное название.`);
+    if (!isBoundedText(round?.name, DATA_LIMITS.text.roundName) || (strict && !round.name.trim())) issues.push(`Раунд ${roundIndex + 1}: не задано корректное название.`);
     if (!Array.isArray(round?.categories) || round.categories.length < 1 || round.categories.length > GAME_LIMITS.categoriesPerRound) {
-      issues.push(`Раунд ${roundIndex + 1}: некорректное количество категорий.`);
+      issues.push(`Раунд ${roundIndex + 1}: должно быть от 1 до ${GAME_LIMITS.categoriesPerRound} категорий.`);
       return;
     }
+
     round.categories.forEach((category, categoryIndex) => {
       takeId(category?.id, `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}`);
-      if (!isBoundedText(category?.name, DATA_LIMITS.text.categoryName)) issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: слишком длинное или некорректное название.`);
+      if (!isBoundedText(category?.name, DATA_LIMITS.text.categoryName) || (strict && !category.name.trim())) {
+        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: не задано корректное название.`);
+      }
       if (!Array.isArray(category?.questions) || category.questions.length < 1 || category.questions.length > GAME_LIMITS.questionsPerCategory) {
-        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: некорректное количество вопросов.`);
+        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: должно быть от 1 до ${GAME_LIMITS.questionsPerCategory} вопросов.`);
         return;
       }
+
+      const usedPoints = new Set<number>();
       category.questions.forEach((question, questionIndex) => {
         const prefix = `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}, вопрос ${questionIndex + 1}`;
         takeId(question?.id, prefix);
-        if (!Number.isSafeInteger(question?.points) || question.points <= 0 || question.points > DATA_LIMITS.maxQuestionPoints) issues.push(`${prefix}: некорректная стоимость.`);
-        if (question?.songId !== undefined && !isBoundedText(question.songId, DATA_LIMITS.text.id)) issues.push(`${prefix}: некорректная ссылка на песню.`);
+        if (!Number.isSafeInteger(question?.points) || question.points <= 0 || question.points > DATA_LIMITS.maxQuestionPoints) {
+          issues.push(`${prefix}: стоимость должна быть целым числом от 1 до ${DATA_LIMITS.maxQuestionPoints}.`);
+        } else if (strict && usedPoints.has(question.points)) {
+          issues.push(`${prefix}: стоимость ${question.points} уже используется в этой категории.`);
+        } else {
+          usedPoints.add(question.points);
+        }
+        if (question?.songId !== undefined && (!isBoundedText(question.songId, DATA_LIMITS.text.id) || !question.songId)) issues.push(`${prefix}: некорректная ссылка на песню.`);
       });
     });
   });
 
+  config.interRounds.forEach((interRound, index) => validateInterRound(interRound, index, strict, takeId, issues));
+
+  const roundIds = new Set(config.rounds.map((round) => round.id));
+  const interRoundIds = new Set(config.interRounds.map((interRound) => interRound.id));
+  const usedRoundIds = new Set<string>();
+  const usedInterRoundIds = new Set<string>();
+  config.stages.forEach((stage, index) => {
+    takeId(stage?.id, `Этап ${index + 1}`);
+    if (stage?.kind === 'round') {
+      if (!roundIds.has(stage.roundId)) issues.push(`Этап ${index + 1}: ссылка на отсутствующий раунд.`);
+      if (usedRoundIds.has(stage.roundId)) issues.push(`Этап ${index + 1}: раунд добавлен в последовательность повторно.`);
+      usedRoundIds.add(stage.roundId);
+    } else if (stage?.kind === 'interRound') {
+      if (!interRoundIds.has(stage.interRoundId)) issues.push(`Этап ${index + 1}: ссылка на отсутствующий межраунд.`);
+      if (usedInterRoundIds.has(stage.interRoundId)) issues.push(`Этап ${index + 1}: межраунд добавлен в последовательность повторно.`);
+      usedInterRoundIds.add(stage.interRoundId);
+    } else {
+      issues.push(`Этап ${index + 1}: неизвестный тип этапа.`);
+    }
+  });
+  if (usedRoundIds.size !== roundIds.size || usedInterRoundIds.size !== interRoundIds.size) issues.push('Не все раунды и межраунды включены в последовательность игры.');
+
   return issues;
 }
 
-export function getGameStartIssues(config: GameConfig, songs: Song[], audioAssets: AudioAsset[], completedQuestionIds: string[] = []): string[] {
+function validateInterRound(
+  interRound: InterRound,
+  index: number,
+  strict: boolean,
+  takeId: (id: unknown, label: string) => void,
+  issues: string[],
+) {
+  const prefix = `Межраунд ${index + 1}`;
+  takeId(interRound?.id, prefix);
+  if (!isBoundedText(interRound?.title, DATA_LIMITS.text.interRoundTitle) || (strict && !interRound.title.trim())) issues.push(`${prefix}: не задано корректное название.`);
+  if (interRound?.templateId === 'continueLyrics' && interRound.templateVersion !== 1) issues.push(`${prefix}: версия шаблона не поддерживается.`);
+  if (interRound?.templateId === 'commonTheme4' && interRound.templateVersion !== 2) issues.push(`${prefix}: версия шаблона не поддерживается.`);
+
+  if (interRound?.templateId === 'continueLyrics') {
+    if (!Array.isArray(interRound.tasks) || interRound.tasks.length < 1 || interRound.tasks.length > GAME_LIMITS.continueLyricsTasks) {
+      issues.push(`${prefix}: должно быть от 1 до ${GAME_LIMITS.continueLyricsTasks} заданий.`);
+      return;
+    }
+    interRound.tasks.forEach((task, taskIndex) => {
+      const taskPrefix = `${prefix}, задание ${taskIndex + 1}`;
+      takeId(task?.id, taskPrefix);
+      if (task.trackId !== undefined && (!isBoundedText(task.trackId, DATA_LIMITS.text.id) || !task.trackId)) issues.push(`${taskPrefix}: некорректная ссылка на аудиотрек.`);
+      if (strict && !task.trackId) issues.push(`${taskPrefix}: не выбран аудиотрек.`);
+      if (!Number.isSafeInteger(task.requiredWordsCount) || task.requiredWordsCount < 1 || task.requiredWordsCount > MAX_REQUIRED_WORDS) issues.push(`${taskPrefix}: количество слов должно быть от 1 до ${MAX_REQUIRED_WORDS}.`);
+      if (!Number.isSafeInteger(task.cutAtMs) || task.cutAtMs < 500 || task.cutAtMs > MAX_CUT_AT_MS) issues.push(`${taskPrefix}: время остановки должно быть от 0,5 секунды до 6 часов.`);
+      if (!isBoundedText(task.answerText, DATA_LIMITS.text.interRoundAnswer) || (strict && !task.answerText.trim())) issues.push(`${taskPrefix}: не указан правильный текст ответа.`);
+    });
+    return;
+  }
+
+  if (interRound?.templateId === 'commonTheme4') {
+    if (!Array.isArray(interRound.stages) || interRound.stages.length < 1 || interRound.stages.length > GAME_LIMITS.commonThemeStages) {
+      issues.push(`${prefix}: должно быть от 1 до ${GAME_LIMITS.commonThemeStages} этапов по 4 трека.`);
+      return;
+    }
+    interRound.stages.forEach((stage, stageIndex) => {
+      const stagePrefix = `${prefix}, этап ${stageIndex + 1}`;
+      takeId(stage?.id, stagePrefix);
+      if (!Array.isArray(stage.tracks) || stage.tracks.length !== 4) {
+        issues.push(`${stagePrefix}: должно быть ровно 4 трека.`);
+        return;
+      }
+      stage.tracks.forEach((track, trackIndex) => {
+        const trackPrefix = `${stagePrefix}, трек ${trackIndex + 1}`;
+        takeId(track?.id, trackPrefix);
+        if (track.trackId !== undefined && (!isBoundedText(track.trackId, DATA_LIMITS.text.id) || !track.trackId)) issues.push(`${trackPrefix}: некорректная ссылка на аудиотрек.`);
+        if (strict && !track.trackId) issues.push(`${trackPrefix}: не выбран аудиотрек.`);
+        if (!isBoundedText(track.answerTitle, DATA_LIMITS.text.songTitle) || (strict && !track.answerTitle.trim())) issues.push(`${trackPrefix}: не указано название песни для ответа.`);
+        if (!isBoundedText(track.answerArtist, DATA_LIMITS.text.artist) || (strict && !track.answerArtist.trim())) issues.push(`${trackPrefix}: не указан исполнитель для ответа.`);
+      });
+      if (!isBoundedText(stage.commonTheme, DATA_LIMITS.text.commonTheme) || (strict && !stage.commonTheme.trim())) issues.push(`${stagePrefix}: не указана общая тема.`);
+    });
+    return;
+  }
+
+  issues.push(`${prefix}: неизвестный шаблон межраунда.`);
+}
+
+export function getGameStartIssues(
+  config: GameConfig,
+  songs: Song[],
+  mediaTracks: MediaTrack[],
+  audioAssets: AudioAsset[],
+  completedQuestionIds: string[] = [],
+  completedInterRoundIds: string[] = [],
+): string[] {
   const issues = [...getGameStructureIssues(config)];
   if (issues.length > 0) return issues;
 
   const completed = new Set(completedQuestionIds);
+  const completedInterRounds = new Set(completedInterRoundIds);
   const songById = new Map(songs.map((song) => [song.id, song]));
+  const trackById = new Map(mediaTracks.map((track) => [track.id, track]));
   const audioById = new Map(audioAssets.map((asset) => [asset.id, asset]));
 
   for (const [roundIndex, round] of config.rounds.entries()) {
@@ -171,45 +227,70 @@ export function getGameStartIssues(config: GameConfig, songs: Song[], audioAsset
           issues.push(`${prefix}: выбранная песня отсутствует в медиатеке.`);
           continue;
         }
-        if (!hasPlayableAudio(song.minusAudioId, audioById)) issues.push(`${prefix}: отсутствует или повреждён минус.`);
-        if (!hasPlayableAudio(song.plusAudioId, audioById)) issues.push(`${prefix}: отсутствует или повреждён плюс.`);
+        if (!hasPlayableTrack(song.minusTrackId, trackById, audioById)) issues.push(`${prefix}: отсутствует или повреждён минус.`);
+        if (!hasPlayableTrack(song.plusTrackId, trackById, audioById)) issues.push(`${prefix}: отсутствует или повреждён плюс.`);
       }
     }
+  }
+
+  for (const interRound of config.interRounds) {
+    if (completedInterRounds.has(interRound.id)) continue;
+    if (interRound.templateId === 'continueLyrics') {
+      interRound.tasks.forEach((task, index) => {
+        if (!hasPlayableTrack(task.trackId, trackById, audioById)) issues.push(`Межраунд «${interRound.title}», задание ${index + 1}: аудиотрек отсутствует или повреждён.`);
+      });
+      continue;
+    }
+    interRound.stages.forEach((stage, stageIndex) => {
+      stage.tracks.forEach((track, trackIndex) => {
+        if (!hasPlayableTrack(track.trackId, trackById, audioById)) issues.push(`Межраунд «${interRound.title}», этап ${stageIndex + 1}, трек ${trackIndex + 1}: аудиотрек отсутствует или повреждён.`);
+      });
+    });
   }
 
   return issues;
 }
 
-export function getSessionContinuationIssues(config: GameConfig, session: GameSession | undefined, songs: Song[], audioAssets: AudioAsset[]) {
-  return getGameStartIssues(config, songs, audioAssets, session?.completedQuestionIds ?? []);
+export function getSessionContinuationIssues(
+  config: GameConfig,
+  session: GameSession | undefined,
+  songs: Song[],
+  mediaTracks: MediaTrack[],
+  audioAssets: AudioAsset[],
+) {
+  return getGameStartIssues(
+    config,
+    songs,
+    mediaTracks,
+    audioAssets,
+    session?.completedQuestionIds ?? [],
+    session?.completedInterRoundIds ?? [],
+  );
 }
 
 export function assertValidSong(song: Song): void {
-  if (!song || !isBoundedText(song.id, DATA_LIMITS.text.id)) throw new Error('В хранилище найдена песня с некорректным id.');
-  if (!isBoundedText(song.artist, DATA_LIMITS.text.artist) || !isBoundedText(song.title, DATA_LIMITS.text.songTitle)) {
-    throw new Error(`Песня «${song.id}» содержит слишком длинное или некорректное название/исполнителя.`);
-  }
+  assertPersistableSong(song);
   if (!song.artist.trim() && !song.title.trim()) throw new Error(`Песня «${song.id}» не содержит исполнителя и названия.`);
-  if (!isValidTimestamp(song.createdAt) || !isValidTimestamp(song.updatedAt)) throw new Error(`Песня «${song.id}» содержит некорректную дату.`);
-  for (const audioId of [song.minusAudioId, song.plusAudioId]) {
-    if (audioId !== undefined && !isSha256(audioId)) throw new Error(`Песня «${song.id}» содержит некорректную ссылку на аудио.`);
-  }
 }
-
 
 function assertPersistableSong(song: Song): void {
   if (!song || !isBoundedText(song.id, DATA_LIMITS.text.id) || !song.id) throw new Error('В хранилище найдена песня с некорректным id.');
-  if (!isBoundedText(song.artist, DATA_LIMITS.text.artist) || !isBoundedText(song.title, DATA_LIMITS.text.songTitle)) {
-    throw new Error(`Песня «${song.id}» содержит слишком длинное или некорректное название/исполнителя.`);
-  }
+  if (!isBoundedText(song.artist, DATA_LIMITS.text.artist) || !isBoundedText(song.title, DATA_LIMITS.text.songTitle)) throw new Error(`Песня «${song.id}» содержит слишком длинное или некорректное название/исполнителя.`);
   if (!isValidTimestamp(song.createdAt) || !isValidTimestamp(song.updatedAt)) throw new Error(`Песня «${song.id}» содержит некорректную дату.`);
-  for (const audioId of [song.minusAudioId, song.plusAudioId]) {
-    if (audioId !== undefined && !isSha256(audioId)) throw new Error(`Песня «${song.id}» содержит некорректную ссылку на аудио.`);
+  for (const trackId of [song.minusTrackId, song.plusTrackId]) {
+    if (trackId !== undefined && (!isBoundedText(trackId, DATA_LIMITS.text.id) || !trackId)) throw new Error(`Песня «${song.id}» содержит некорректную ссылку на медиатрек.`);
   }
 }
 
+export function assertValidMediaTrack(track: MediaTrack): void {
+  if (!track || !isBoundedText(track.id, DATA_LIMITS.text.id) || !track.id) throw new Error('В хранилище найден медиатрек с некорректным id.');
+  if (!isBoundedText(track.name, DATA_LIMITS.text.mediaTrackName) || !track.name.trim()) throw new Error(`Медиатрек «${track.id}» не содержит корректного названия.`);
+  if (!isSha256(track.audioId)) throw new Error(`Медиатрек «${track.name}» содержит некорректную ссылку на аудио.`);
+  if (!isValidTimestamp(track.createdAt) || !isValidTimestamp(track.updatedAt)) throw new Error(`Медиатрек «${track.name}» содержит некорректную дату.`);
+}
+
 export function assertValidPersistedState(state: PersistedState): void {
-  if (!state || state.version !== 2 || !Array.isArray(state.games) || !Array.isArray(state.songs) || !Array.isArray(state.audioAssets) || !Array.isArray(state.sessions)) {
+  if (!state || state.version !== 4 || !Array.isArray(state.games) || !Array.isArray(state.songs) || !Array.isArray(state.mediaTracks) || !Array.isArray(state.audioAssets) || !Array.isArray(state.sessions)) {
     throw new Error('Локальное хранилище имеет неподдерживаемую структуру.');
   }
   for (const game of state.games) {
@@ -217,6 +298,7 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (issues.length > 0) throw new Error(`Локальная игра «${game?.title || game?.id || 'без названия'}» повреждена: ${issues[0]}`);
   }
   state.songs.forEach(assertPersistableSong);
+  state.mediaTracks.forEach(assertValidMediaTrack);
 
   const gameIds = new Set<string>();
   for (const game of state.games) {
@@ -228,23 +310,30 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (songIds.has(song.id)) throw new Error(`Песня «${song.id}» продублирована в локальном хранилище.`);
     songIds.add(song.id);
   }
+  const trackIds = new Set<string>();
+  for (const track of state.mediaTracks) {
+    if (trackIds.has(track.id)) throw new Error(`Медиатрек «${track.id}» продублирован в локальном хранилище.`);
+    trackIds.add(track.id);
+  }
   const audioIds = new Set<string>();
   for (const asset of state.audioAssets) {
-    if (!asset || !isSha256(asset.id) || asset.sha256 !== asset.id || !(asset.blob instanceof Blob) || asset.blob.size <= 0 || asset.verified !== true) {
-      throw new Error('Локальное хранилище содержит повреждённую запись аудио.');
-    }
+    if (!asset || !isSha256(asset.id) || asset.sha256 !== asset.id || !(asset.blob instanceof Blob) || asset.blob.size <= 0 || asset.verified !== true) throw new Error('Локальное хранилище содержит повреждённую запись аудио.');
     if (audioIds.has(asset.id)) throw new Error(`Аудиофайл «${asset.id}» продублирован в локальном хранилище.`);
     audioIds.add(asset.id);
   }
 
+  for (const track of state.mediaTracks) if (!audioIds.has(track.audioId)) throw new Error(`Медиатрек «${track.name}» ссылается на отсутствующий аудиофайл.`);
   for (const song of state.songs) {
-    for (const audioId of [song.minusAudioId, song.plusAudioId]) {
-      if (audioId && !audioIds.has(audioId)) throw new Error(`Песня «${song.artist} — ${song.title}» ссылается на отсутствующий аудиофайл.`);
+    for (const trackId of [song.minusTrackId, song.plusTrackId]) {
+      if (trackId && !trackIds.has(trackId)) throw new Error(`Песня «${song.artist} — ${song.title}» ссылается на отсутствующий медиатрек.`);
     }
   }
   for (const game of state.games) {
     for (const question of game.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions))) {
       if (question.songId && !songIds.has(question.songId)) throw new Error(`Игра «${game.title}» ссылается на отсутствующую песню.`);
+    }
+    for (const interRound of game.interRounds) {
+      for (const trackId of getInterRoundTrackIds(interRound)) if (trackId && !trackIds.has(trackId)) throw new Error(`Межраунд «${interRound.title}» ссылается на отсутствующий медиатрек.`);
     }
   }
 
@@ -253,15 +342,12 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (!session || !gameIds.has(session.gameId)) throw new Error('Локальное хранилище содержит сессию для отсутствующей игры.');
     if (sessionGameIds.has(session.gameId)) throw new Error(`Для игры «${session.gameId}» найдено несколько игровых сессий.`);
     sessionGameIds.add(session.gameId);
-    if (!Number.isSafeInteger(session.roundIndex) || session.roundIndex < 0 || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean') {
-      throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
-    }
-    for (const list of [session.completedQuestionIds, session.activeExcludedTeamIds, session.currentIncorrectTeamIds, session.nextExcludedTeamIds]) {
+    if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean') throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
+    for (const list of [session.completedQuestionIds, session.completedInterRoundIds, session.activeExcludedTeamIds, session.currentIncorrectTeamIds, session.nextExcludedTeamIds]) {
       if (!Array.isArray(list) || list.some((id) => !isBoundedText(id, DATA_LIMITS.text.id))) throw new Error('Локальное хранилище содержит повреждённый список идентификаторов в игровой сессии.');
     }
-    if (!session.scores || typeof session.scores !== 'object' || Object.values(session.scores).some((score) => !Number.isSafeInteger(score))) {
-      throw new Error('Локальное хранилище содержит повреждённые баллы игровой сессии.');
-    }
+    if (session.interRound && (!isBoundedText(session.interRound.interRoundId, DATA_LIMITS.text.id) || !['intro', 'play', 'answer'].includes(session.interRound.phase) || !Number.isSafeInteger(session.interRound.taskIndex) || session.interRound.taskIndex < 0 || !Number.isSafeInteger(session.interRound.trackIndex) || session.interRound.trackIndex < 0)) throw new Error('Локальное хранилище содержит повреждённый прогресс межраунда.');
+    if (!session.scores || typeof session.scores !== 'object' || Object.values(session.scores).some((score) => !Number.isSafeInteger(score))) throw new Error('Локальное хранилище содержит повреждённые баллы игровой сессии.');
   }
   if (state.activeGameId !== null && !gameIds.has(state.activeGameId)) throw new Error('Активная игра отсутствует в локальном хранилище.');
 }
@@ -278,9 +364,11 @@ export function isBoundedText(value: unknown, maxLength: number): value is strin
   return typeof value === 'string' && value.length <= maxLength;
 }
 
-function hasPlayableAudio(audioId: string | undefined, audioById: Map<string, AudioAsset>) {
-  if (!audioId) return false;
-  const asset = audioById.get(audioId);
+function hasPlayableTrack(trackId: string | undefined, trackById: Map<string, MediaTrack>, audioById: Map<string, AudioAsset>) {
+  if (!trackId) return false;
+  const track = trackById.get(trackId);
+  if (!track) return false;
+  const asset = audioById.get(track.audioId);
   return Boolean(asset && asset.id === asset.sha256 && isSha256(asset.id) && asset.verified === true && asset.blob instanceof Blob && asset.blob.size > 0);
 }
 

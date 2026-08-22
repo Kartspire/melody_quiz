@@ -3,6 +3,7 @@ import { useUnit } from 'effector-react';
 import {
   $activeGame,
   $audioAssets,
+  $mediaTracks,
   $songs,
   $session,
   categoryAdded,
@@ -20,6 +21,7 @@ import {
   roundAdded,
   roundNameChanged,
   roundRemoved,
+  stageMoved,
   screenChanged,
   teamAdded,
   teamChanged,
@@ -29,19 +31,22 @@ import { DATA_LIMITS, GAME_LIMITS } from '../model/limits';
 import { DraftNumberInput } from './DraftNumberInput';
 import { SongForm } from './SongForm';
 import { useEscapeClose } from './useEscapeClose';
+import { InterRoundEditor } from '../interRounds/InterRoundEditor';
+import { InterRoundTemplateDialog } from '../interRounds/InterRoundTemplateDialog';
 
 type EditorTab = 'structure' | 'teams' | 'settings';
 
 export function AdminPanel() {
-  const [config, songs, audioAssets, session] = useUnit([$activeGame, $songs, $audioAssets, $session]);
+  const [config, songs, mediaTracks, audioAssets, session] = useUnit([$activeGame, $songs, $mediaTracks, $audioAssets, $session]);
   const [tab, setTab] = useState<EditorTab>('structure');
   const [picker, setPicker] = useState<{ roundId: string; categoryId: string; questionId: string; songId?: string } | null>(null);
+  const [showInterRoundLibrary, setShowInterRoundLibrary] = useState(false);
   const songById = useMemo(() => new Map(songs.map((song) => [song.id, song])), [songs]);
 
   if (!config) return null;
 
   const startGame = () => {
-    const issues = getGameStartIssues(config, songs, audioAssets);
+    const issues = getGameStartIssues(config, songs, mediaTracks, audioAssets);
     if (issues.length > 0) {
       window.alert(formatGameIssues(issues));
       return;
@@ -68,13 +73,13 @@ export function AdminPanel() {
         <div>
           <span className="eyebrow">Редактор игры</span>
           <h1>{config.title || 'Без названия'}</h1>
-          <p>{config.rounds.length} раундов · {assignedCount}/{questionsCount} песен назначено · {config.teams.length} команд</p>
+          <p>{config.rounds.length} раундов · {config.interRounds.length} межраундов · {assignedCount}/{questionsCount} песен назначено · {config.teams.length} команд</p>
         </div>
         <button className="primary-button" onClick={startGame}>▶ Начать новую игру</button>
       </div>
 
       <nav className="editor-tabs" aria-label="Разделы редактора">
-        <EditorTabButton active={tab === 'structure'} onClick={() => setTab('structure')} label="Структура игры" description="Раунды, категории и песни" />
+        <EditorTabButton active={tab === 'structure'} onClick={() => setTab('structure')} label="Структура игры" description="Раунды, межраунды и порядок игры" />
         <EditorTabButton active={tab === 'teams'} onClick={() => setTab('teams')} label="Команды" description="Названия и цвета" />
         <EditorTabButton active={tab === 'settings'} onClick={() => setTab('settings')} label="Настройки" description="Название и управление игрой" />
       </nav>
@@ -94,108 +99,144 @@ export function AdminPanel() {
       {tab === 'structure' && (
         <section className="editor-tab-content">
           <div className="section-intro">
-            <div><h2>Структура игры</h2><p>Добавляйте раунды напрямую. Количество раундов определяется самой структурой игры.</p></div>
-            <button className="secondary-button" disabled={config.rounds.length >= GAME_LIMITS.rounds} onClick={() => roundAdded()}>+ Добавить раунд</button>
+            <div><h2>Структура игры</h2><p>Раунды и межраунды идут в том порядке, в котором будут показаны во время игры. Этапы можно перемещать стрелками.</p></div>
           </div>
 
           <section className="rounds-editor">
-            {config.rounds.map((round, roundIndex) => (
-              <article className="round-editor" key={round.id}>
-                <div className="round-editor__header round-editor__header--actions">
-                  <div className="round-number">{roundIndex + 1}</div>
-                  <input className="round-name-input" maxLength={DATA_LIMITS.text.roundName} value={round.name} onChange={(event) => roundNameChanged({ roundId: round.id, name: event.target.value })} />
-                  <button className="secondary-button" disabled={round.categories.length >= GAME_LIMITS.categoriesPerRound} onClick={() => categoryAdded({ roundId: round.id })}>+ Категория</button>
-                  <button
-                    className="danger-ghost"
-                    disabled={config.rounds.length <= 1}
-                    onClick={() => {
-                      const questionCount = round.categories.reduce((sum, category) => sum + category.questions.length, 0);
-                      const suffix = questionCount > 0 ? ` В нём ${questionCount} вопросов.` : '';
-                      if (window.confirm(`Удалить «${round.name}»?${suffix}`)) roundRemoved(round.id);
-                    }}
-                  >Удалить раунд</button>
-                </div>
-
-                <div className="categories-editor">
-                  {round.categories.map((category) => (
-                    <section className="category-editor" key={category.id}>
-                      <div className="category-editor__header">
-                        <input
-                          maxLength={DATA_LIMITS.text.categoryName}
-                          value={category.name}
-                          onChange={(event) => categoryNameChanged({ roundId: round.id, categoryId: category.id, name: event.target.value })}
-                          placeholder="Название категории"
-                        />
-                        <button
-                          className="danger-ghost"
-                          disabled={round.categories.length <= 1}
-                          title={round.categories.length <= 1 ? 'В раунде должна остаться хотя бы одна категория' : 'Удалить категорию'}
-                          onClick={() => {
-                            const assigned = category.questions.filter((question) => question.songId).length;
-                            const suffix = assigned > 0 ? ` В ней назначено песен: ${assigned}.` : '';
-                            if (window.confirm(`Удалить категорию «${category.name}»?${suffix}`)) categoryRemoved({ roundId: round.id, categoryId: category.id });
-                          }}
-                        >Удалить категорию</button>
+            {config.stages.map((stage, stageIndex) => {
+              if (stage.kind === 'interRound') {
+                const interRound = config.interRounds.find((item) => item.id === stage.interRoundId);
+                if (!interRound) return null;
+                return (
+                  <article className="round-editor inter-round-editor" key={stage.id}>
+                    <div className="round-editor__header round-editor__header--actions inter-round-editor__header">
+                      <div className="round-number round-number--inter">М</div>
+                      <div className="inter-round-stage-title">
+                        <span className="eyebrow">Этап {stageIndex + 1} · Межраунд</span>
+                        <strong>{interRound.title || 'Без названия'}</strong>
                       </div>
+                      <StageOrderActions
+                        canMoveUp={stageIndex > 0}
+                        canMoveDown={stageIndex < config.stages.length - 1}
+                        onMoveUp={() => stageMoved({ stageId: stage.id, direction: -1 })}
+                        onMoveDown={() => stageMoved({ stageId: stage.id, direction: 1 })}
+                      />
+                    </div>
+                    <InterRoundEditor interRound={interRound} />
+                  </article>
+                );
+              }
 
-                      <div className="question-list">
-                        {category.questions.map((question) => {
-                          const song = question.songId ? songById.get(question.songId) : undefined;
-                          return (
-                            <article className="question-editor question-editor--library" key={question.id}>
-                              <label className="field compact-field">
-                                <span>Стоимость</span>
-                                <DraftNumberInput
-                                  value={question.points}
-                                  min={1}
-                                  onCommit={(points) => questionChanged({
-                                    roundId: round.id,
-                                    categoryId: category.id,
-                                    questionId: question.id,
-                                    patch: { points },
-                                  })}
-                                />
-                              </label>
+              const round = config.rounds.find((item) => item.id === stage.roundId);
+              if (!round) return null;
+              const roundIndex = config.stages.slice(0, stageIndex + 1).filter((item) => item.kind === 'round').length - 1;
+              return (
+                <article className="round-editor" key={stage.id}>
+                  <div className="round-editor__header round-editor__header--actions">
+                    <div className="round-number">{roundIndex + 1}</div>
+                    <input className="round-name-input" maxLength={DATA_LIMITS.text.roundName} value={round.name} onChange={(event) => roundNameChanged({ roundId: round.id, name: event.target.value })} />
+                    <StageOrderActions
+                      canMoveUp={stageIndex > 0}
+                      canMoveDown={stageIndex < config.stages.length - 1}
+                      onMoveUp={() => stageMoved({ stageId: stage.id, direction: -1 })}
+                      onMoveDown={() => stageMoved({ stageId: stage.id, direction: 1 })}
+                    />
+                    <button
+                      className="danger-ghost"
+                      disabled={config.rounds.length <= 1}
+                      onClick={() => {
+                        const questionCount = round.categories.reduce((sum, category) => sum + category.questions.length, 0);
+                        const suffix = questionCount > 0 ? ` В нём ${questionCount} вопросов.` : '';
+                        if (window.confirm(`Удалить «${round.name}»?${suffix}`)) roundRemoved(round.id);
+                      }}
+                    >Удалить раунд</button>
+                  </div>
 
-                              <div className="question-song-field">
-                                <span>Песня</span>
-                                {song ? (
-                                  <button className="selected-song-button" onClick={() => setPicker({ roundId: round.id, categoryId: category.id, questionId: question.id, songId: song.id })}>
-                                    <strong>{song.artist || 'Без исполнителя'}</strong>
-                                    <span>{song.title || 'Без названия'}</span>
-                                    <small>{song.minusAudioId ? 'Минус ✓' : 'Нет минуса'} · {song.plusAudioId ? 'Плюс ✓' : 'Нет плюса'}</small>
-                                  </button>
-                                ) : (
-                                  <button className="select-song-button" onClick={() => setPicker({ roundId: round.id, categoryId: category.id, questionId: question.id })}>
-                                    + Выбрать песню из медиатеки
-                                  </button>
-                                )}
-                              </div>
+                  <div className="categories-editor">
+                    {round.categories.map((category) => (
+                      <section className="category-editor" key={category.id}>
+                        <div className="category-editor__header">
+                          <input
+                            maxLength={DATA_LIMITS.text.categoryName}
+                            value={category.name}
+                            onChange={(event) => categoryNameChanged({ roundId: round.id, categoryId: category.id, name: event.target.value })}
+                            placeholder="Название категории"
+                          />
+                          <button
+                            className="danger-ghost"
+                            disabled={round.categories.length <= 1}
+                            title={round.categories.length <= 1 ? 'В раунде должна остаться хотя бы одна категория' : 'Удалить категорию'}
+                            onClick={() => {
+                              const assigned = category.questions.filter((question) => question.songId).length;
+                              const suffix = assigned > 0 ? ` В ней назначено песен: ${assigned}.` : '';
+                              if (window.confirm(`Удалить категорию «${category.name}»?${suffix}`)) categoryRemoved({ roundId: round.id, categoryId: category.id });
+                            }}
+                          >Удалить категорию</button>
+                        </div>
 
-                              <button
-                                className="question-delete"
-                                disabled={category.questions.length <= 1}
-                                onClick={() => {
-                                  if (question.songId && !window.confirm('Удалить вопрос с назначенной песней?')) return;
-                                  questionRemoved({ roundId: round.id, categoryId: category.id, questionId: question.id });
-                                }}
-                                title={category.questions.length <= 1 ? 'В категории должен остаться хотя бы один вопрос' : 'Удалить вопрос'}
-                              >×</button>
-                            </article>
-                          );
-                        })}
-                      </div>
-                      <button className="add-question" disabled={category.questions.length >= GAME_LIMITS.questionsPerCategory} onClick={() => questionAdded({ roundId: round.id, categoryId: category.id })}>+ Добавить вопрос</button>
-                    </section>
-                  ))}
-                </div>
-              </article>
-            ))}
+                        <div className="question-list">
+                          {category.questions.map((question) => {
+                            const song = question.songId ? songById.get(question.songId) : undefined;
+                            return (
+                              <article className="question-editor question-editor--library" key={question.id}>
+                                <label className="field compact-field">
+                                  <span>Стоимость</span>
+                                  <DraftNumberInput
+                                    value={question.points}
+                                    min={1}
+                                    onCommit={(points) => questionChanged({ roundId: round.id, categoryId: category.id, questionId: question.id, patch: { points } })}
+                                  />
+                                </label>
+                                <div className="question-song-field">
+                                  <span>Песня</span>
+                                  {song ? (
+                                    <button className="selected-song-button" onClick={() => setPicker({ roundId: round.id, categoryId: category.id, questionId: question.id, songId: song.id })}>
+                                      <strong>{song.artist || 'Без исполнителя'}</strong>
+                                      <span>{song.title || 'Без названия'}</span>
+                                      <small>{song.minusTrackId ? 'Минус ✓' : 'Нет минуса'} · {song.plusTrackId ? 'Плюс ✓' : 'Нет плюса'}</small>
+                                    </button>
+                                  ) : (
+                                    <button className="select-song-button" onClick={() => setPicker({ roundId: round.id, categoryId: category.id, questionId: question.id })}>+ Выбрать песню из медиатеки</button>
+                                  )}
+                                </div>
+                                <button
+                                  className="question-delete"
+                                  disabled={category.questions.length <= 1}
+                                  onClick={() => {
+                                    if (question.songId && !window.confirm('Удалить вопрос с назначенной песней?')) return;
+                                    questionRemoved({ roundId: round.id, categoryId: category.id, questionId: question.id });
+                                  }}
+                                  title={category.questions.length <= 1 ? 'В категории должен остаться хотя бы один вопрос' : 'Удалить вопрос'}
+                                >×</button>
+                              </article>
+                            );
+                          })}
+                        </div>
+                        <button className="add-question" disabled={category.questions.length >= GAME_LIMITS.questionsPerCategory} onClick={() => questionAdded({ roundId: round.id, categoryId: category.id })}>+ Добавить вопрос</button>
+                      </section>
+                    ))}
+
+                    <button
+                      className="add-structure-card add-structure-card--category"
+                      disabled={round.categories.length >= GAME_LIMITS.categoriesPerRound}
+                      onClick={() => categoryAdded({ roundId: round.id })}
+                    >
+                      <span>＋</span><strong>Добавить категорию</strong><small>Максимум {GAME_LIMITS.categoriesPerRound} категорий в раунде</small>
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
           </section>
 
-          <button className="add-round-card" disabled={config.rounds.length >= GAME_LIMITS.rounds} onClick={() => roundAdded()}>
-            <span>＋</span><strong>Добавить раунд</strong><small>Максимум {GAME_LIMITS.rounds} раундов</small>
-          </button>
+          <div className="add-stage-grid">
+            <button className="add-structure-card add-structure-card--round" disabled={config.rounds.length >= GAME_LIMITS.rounds} onClick={() => roundAdded()}>
+              <span>＋</span><strong>Добавить раунд</strong><small>Максимум {GAME_LIMITS.rounds} обычных раундов</small>
+            </button>
+            <button className="add-structure-card add-structure-card--inter-round" disabled={config.interRounds.length >= GAME_LIMITS.interRounds} onClick={() => setShowInterRoundLibrary(true)}>
+              <span>＋</span><strong>Добавить межраунд</strong><small>Выбрать механику из библиотеки шаблонов</small>
+            </button>
+          </div>
         </section>
       )}
 
@@ -238,6 +279,7 @@ export function AdminPanel() {
             <div className="game-settings-grid">
               <label className="field"><span>Название игры</span><input maxLength={DATA_LIMITS.text.gameTitle} value={config.title} onChange={(event) => gameTitleChanged(event.target.value)} /></label>
               <div className="readonly-setting"><span>Раундов</span><strong>{config.rounds.length}</strong><small>Добавляются во вкладке «Структура игры»</small></div>
+              <div className="readonly-setting"><span>Межраундов</span><strong>{config.interRounds.length}</strong><small>Выбираются из библиотеки шаблонов</small></div>
               <div className="readonly-setting"><span>Вопросов</span><strong>{questionsCount}</strong><small>{assignedCount} с назначенными песнями</small></div>
               <div className="readonly-setting"><span>Команд</span><strong>{config.teams.length}</strong><small>Настраиваются во вкладке «Команды»</small></div>
             </div>
@@ -263,6 +305,8 @@ export function AdminPanel() {
         <button className="primary-button" onClick={startGame}>▶ Начать новую игру</button>
       </div>
 
+      {showInterRoundLibrary && <InterRoundTemplateDialog onClose={() => setShowInterRoundLibrary(false)} />}
+
       {picker && (
         <SongPicker
           currentSongId={picker.songId}
@@ -274,6 +318,29 @@ export function AdminPanel() {
         />
       )}
     </main>
+  );
+}
+
+function StageOrderActions({
+  canMoveUp,
+  canMoveDown,
+  onMoveUp,
+  onMoveDown,
+}: {
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+}) {
+  return (
+    <div className="stage-order-actions" aria-label="Изменить порядок этапов">
+      <button className="stage-move-button" disabled={!canMoveUp} onClick={onMoveUp} title="Переместить выше" aria-label="Переместить выше">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 12.5 10 7l5 5.5" /></svg>
+      </button>
+      <button className="stage-move-button" disabled={!canMoveDown} onClick={onMoveDown} title="Переместить ниже" aria-label="Переместить ниже">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 7.5 5 5.5 5-5.5" /></svg>
+      </button>
+    </div>
   );
 }
 
@@ -328,7 +395,7 @@ function SongPicker({ currentSongId, onSelect, onClose }: { currentSongId?: stri
               ) : filtered.map((song) => (
                 <button key={song.id} className={song.id === currentSongId ? 'song-picker-row song-picker-row--selected' : 'song-picker-row'} onClick={() => onSelect(song.id)}>
                   <div><strong>{song.artist || 'Без исполнителя'}</strong><span>{song.title || 'Без названия'}</span></div>
-                  <small>{song.minusAudioId ? 'Минус ✓' : 'Нет минуса'} · {song.plusAudioId ? 'Плюс ✓' : 'Нет плюса'}</small>
+                  <small>{song.minusTrackId ? 'Минус ✓' : 'Нет минуса'} · {song.plusTrackId ? 'Плюс ✓' : 'Нет плюса'}</small>
                 </button>
               ))}
             </div>

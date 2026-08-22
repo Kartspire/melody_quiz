@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { getStorageEstimate, isPersistentStorage, requestPersistentStorage } from '../lib/storage';
-import { $games, $persistedState, $songs, screenChanged } from '../model/game';
+import { $games, $mediaTracks, $persistedState, $songs, screenChanged } from '../model/game';
 
 export function SettingsPage() {
-  const [games, songs, persistedState] = useUnit([$games, $songs, $persistedState]);
+  const [games, songs, mediaTracks, persistedState] = useUnit([$games, $songs, $mediaTracks, $persistedState]);
   const audioSize = persistedState.audioAssets.reduce((sum, asset) => sum + asset.blob.size, 0);
   const [storageInfo, setStorageInfo] = useState<{ usage: number; quota: number } | null>(null);
   const [persistent, setPersistent] = useState<boolean | null>(null);
@@ -48,6 +48,7 @@ export function SettingsPage() {
       <section className="settings-overview-grid">
         <article className="settings-stat-card"><strong>{games.length}</strong><span>Сохранённых игр</span></article>
         <article className="settings-stat-card"><strong>{songs.length}</strong><span>Песен в медиатеке</span></article>
+        <article className="settings-stat-card"><strong>{mediaTracks.length}</strong><span>Аудиотреков в медиатеке</span></article>
         <article className="settings-stat-card"><strong>{formatBytes(audioSize)}</strong><span>Аудио приложения</span></article>
         {storageInfo && <article className="settings-stat-card"><strong>{formatBytes(storageInfo.usage)}</strong><span>Всего занято сайтом</span></article>}
         {storageInfo?.quota ? <article className="settings-stat-card"><strong>{formatBytes(storageInfo.quota)}</strong><span>Доступная квота</span></article> : null}
@@ -63,7 +64,7 @@ export function SettingsPage() {
         <div className="settings-action-list">
           <div><strong>Игры</strong><span>Каждую игру можно экспортировать вместе со всеми используемыми песнями.</span></div>
           <button className="secondary-button" onClick={() => screenChanged('library')}>Перейти к играм</button>
-          <div><strong>Медиатека</strong><span>Можно сохранить всю библиотеку песен одним архивом и восстановить её позже.</span></div>
+          <div><strong>Медиатека</strong><span>Можно сохранить песни и независимые аудиотреки одним архивом и восстановить её позже.</span></div>
           <button className="secondary-button" onClick={() => screenChanged('media')}>Перейти в медиатеку</button>
           <div>
             <strong>Защита локального хранилища</strong>

@@ -3,9 +3,12 @@ import { useUnit } from 'effector-react';
 import {
   $activeGame,
   $activeQuestion,
+  $activeInterRound,
   $activeRound,
+  $activeRoundOrdinal,
   $audioAssets,
   $isGameFinished,
+  $mediaTracks,
   $session,
   $songs,
   gameRestarted,
@@ -20,19 +23,24 @@ import {
   teamIncorrectToggled,
 } from '../model/game';
 import { AudioQuestion } from './AudioQuestion';
+import { InterRoundPlayer } from '../interRounds/InterRoundPlayer';
 
 export function GameBoard() {
-  const [config, session, round, activeQuestion, finished, songs, audioAssets] = useUnit([
+  const [config, session, round, roundOrdinal, interRound, activeQuestion, finished, songs, mediaTracks, audioAssets] = useUnit([
     $activeGame,
     $session,
     $activeRound,
+    $activeRoundOrdinal,
+    $activeInterRound,
     $activeQuestion,
     $isGameFinished,
     $songs,
+    $mediaTracks,
     $audioAssets,
   ]);
 
   const songById = useMemo(() => new Map(songs.map((song) => [song.id, song])), [songs]);
+  const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
   const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
 
   if (!config || !session) return null;
@@ -54,7 +62,7 @@ export function GameBoard() {
           ))}
         </div>
         <button className="primary-button" onClick={() => {
-          const issues = getGameStartIssues(config, songs, audioAssets);
+          const issues = getGameStartIssues(config, songs, mediaTracks, audioAssets);
           if (issues.length > 0) {
             window.alert('Игра изменилась и сейчас не готова к повторному запуску. Проверьте структуру и аудиофайлы в редакторе.');
             screenChanged('admin');
@@ -65,6 +73,8 @@ export function GameBoard() {
       </main>
     );
   }
+
+  if (interRound) return <InterRoundPlayer />;
 
   if (activeQuestion && round) {
     return (
@@ -102,7 +112,7 @@ export function GameBoard() {
     <main className="game-page page-shell">
       <div className="game-round-heading">
         <div>
-          <span className="eyebrow">Раунд {session.roundIndex + 1} из {config.rounds.length}</span>
+          <span className="eyebrow">Раунд {roundOrdinal} из {config.rounds.length}</span>
           <h1>{round.name}</h1>
         </div>
         <div className="round-progress">
@@ -132,7 +142,8 @@ export function GameBoard() {
                 {category.questions.map((question) => {
                   const completed = session.completedQuestionIds.includes(question.id);
                   const song = question.songId ? songById.get(question.songId) : undefined;
-                  const hasMinus = Boolean(song?.minusAudioId && audioById.has(song.minusAudioId));
+                  const minusTrack = song?.minusTrackId ? trackById.get(song.minusTrackId) : undefined;
+                  const hasMinus = Boolean(minusTrack && audioById.has(minusTrack.audioId));
                   return completed ? (
                     <div className="question-slot question-slot--empty" key={question.id} aria-label="Вопрос разыгран" />
                   ) : (

@@ -1,4 +1,5 @@
 import { createId } from '../lib/ids';
+import { cloneInterRoundInstance } from '../interRounds/templates';
 import { canonicalizeAudioAsset, createContentAddressedAudioAsset } from '../lib/audio';
 import { DATA_LIMITS } from './limits';
 import type {
@@ -6,14 +7,15 @@ import type {
   Category,
   GameConfig,
   GameSession,
+  GameStage,
   LegacyPersistedState,
+  MediaTrack,
   PersistedState,
   Question,
   Round,
   Song,
   Team,
 } from './types';
-
 
 function boundedText(value: string, maxLength: number, fallback = '') {
   const trimmed = value.trim();
@@ -28,10 +30,7 @@ function withSuffix(value: string, suffix: string, maxLength: number, fallback: 
 
 const TEAM_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1', '#14b8a6', '#e11d48'];
 
-export const createQuestion = (points = 100): Question => ({
-  id: createId('question'),
-  points,
-});
+export const createQuestion = (points = 100): Question => ({ id: createId('question'), points });
 
 export const createCategory = (index = 0): Category => ({
   id: createId('category'),
@@ -45,6 +44,9 @@ export const createRound = (index = 0): Round => ({
   categories: [createCategory(0)],
 });
 
+export const createRoundStage = (roundId: string): GameStage => ({ id: createId('stage'), kind: 'round', roundId });
+export const createInterRoundStage = (interRoundId: string): GameStage => ({ id: createId('stage'), kind: 'interRound', interRoundId });
+
 export const createTeam = (index = 0): Team => ({
   id: createId('team'),
   name: `Команда ${index + 1}`,
@@ -53,42 +55,67 @@ export const createTeam = (index = 0): Team => ({
 
 export const createGame = (title = 'Новая игра'): GameConfig => {
   const now = Date.now();
+  const round = createRound(0);
   return {
     id: createId('game'),
     title: boundedText(title, DATA_LIMITS.text.gameTitle, 'Новая игра'),
-    rounds: [createRound(0)],
+    rounds: [round],
+    interRounds: [],
+    stages: [createRoundStage(round.id)],
     teams: [createTeam(0), createTeam(1)],
     createdAt: now,
     updatedAt: now,
   };
 };
 
+
 export const cloneGame = (source: GameConfig): GameConfig => {
   const now = Date.now();
+  const roundIdMap = new Map<string, string>();
+  const interRoundIdMap = new Map<string, string>();
+
+  const rounds = source.rounds.map((round) => {
+    const id = createId('round');
+    roundIdMap.set(round.id, id);
+    return {
+      ...round,
+      id,
+      categories: round.categories.map((category) => ({
+        ...category,
+        id: createId('category'),
+        questions: category.questions.map((question) => ({ ...question, id: createId('question') })),
+      })),
+    };
+  });
+
+  const interRounds = source.interRounds.map((interRound) => {
+    const cloned = cloneInterRoundInstance(interRound);
+    interRoundIdMap.set(interRound.id, cloned.id);
+    return cloned;
+  });
+
   return {
     id: createId('game'),
     title: withSuffix(source.title, ' — копия', DATA_LIMITS.text.gameTitle, 'Без названия'),
     createdAt: now,
     updatedAt: now,
     teams: source.teams.map((team, index) => ({ ...team, id: createId(`team-${index + 1}`) })),
-    rounds: source.rounds.map((round) => ({
-      ...round,
-      id: createId('round'),
-      categories: round.categories.map((category) => ({
-        ...category,
-        id: createId('category'),
-        questions: category.questions.map((question) => ({ ...question, id: createId('question') })),
-      })),
-    })),
+    rounds,
+    interRounds,
+    stages: source.stages.map((stage) => stage.kind === 'round'
+      ? { id: createId('stage'), kind: 'round', roundId: roundIdMap.get(stage.roundId)! }
+      : { id: createId('stage'), kind: 'interRound', interRoundId: interRoundIdMap.get(stage.interRoundId)! }),
   };
 };
 
 export const createSession = (config: GameConfig): GameSession => ({
   gameId: config.id,
   started: false,
-  roundIndex: 0,
+  stageIndex: 0,
   activeQuestionId: null,
   completedQuestionIds: [],
+  completedInterRoundIds: [],
+  interRound: null,
   scores: Object.fromEntries(config.teams.map((team) => [team.id, 0])),
   awardedTeamId: null,
   answerRevealed: false,
@@ -99,24 +126,35 @@ export const createSession = (config: GameConfig): GameSession => ({
 
 export const createAudioAsset = (file: File) => createContentAddressedAudioAsset(file);
 
+export const createMediaTrack = (asset: AudioAsset, name = asset.name): MediaTrack => {
+  const now = Date.now();
+  return {
+    id: createId('track'),
+    name: boundedText(name, DATA_LIMITS.text.mediaTrackName, asset.name || 'Аудиотрек'),
+    audioId: asset.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
 export const createSong = ({
   artist,
   title,
-  minus,
-  plus,
+  minusTrack,
+  plusTrack,
 }: {
   artist: string;
   title: string;
-  minus?: AudioAsset;
-  plus?: AudioAsset;
+  minusTrack?: MediaTrack;
+  plusTrack?: MediaTrack;
 }): Song => {
   const now = Date.now();
   return {
     id: createId('song'),
     artist: boundedText(artist, DATA_LIMITS.text.artist),
     title: boundedText(title, DATA_LIMITS.text.songTitle),
-    minusAudioId: minus?.id,
-    plusAudioId: plus?.id,
+    minusTrackId: minusTrack?.id,
+    plusTrackId: plusTrack?.id,
     createdAt: now,
     updatedAt: now,
   };
@@ -136,9 +174,10 @@ export const cloneSong = (source: Song): Song => {
 export const createInitialState = (): PersistedState => {
   const game = createGame('Угадай мелодию');
   return {
-    version: 2,
+    version: 4,
     games: [game],
     songs: [],
+    mediaTracks: [],
     audioAssets: [],
     sessions: [createSession(game)],
     activeGameId: game.id,
@@ -150,6 +189,16 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
   const gameId = createId('game');
   const songs: Song[] = [];
   const audioByHash = new Map<string, AudioAsset>();
+  const trackByAudioId = new Map<string, MediaTrack>();
+
+  const trackFor = (asset: AudioAsset | undefined) => {
+    if (!asset) return undefined;
+    const existing = trackByAudioId.get(asset.id);
+    if (existing) return existing;
+    const track = createMediaTrack(asset);
+    trackByAudioId.set(asset.id, track);
+    return track;
+  };
 
   const rounds = [] as GameConfig['rounds'];
   for (const round of legacy.config.rounds) {
@@ -163,7 +212,6 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
         const plus = question.plus
           ? await canonicalizeAudioAsset({ name: question.plus.name, type: question.plus.type, blob: question.plus.blob })
           : undefined;
-
         if (minus) audioByHash.set(minus.id, minus);
         if (plus) audioByHash.set(plus.id, plus);
 
@@ -177,8 +225,8 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
           id: createId('song'),
           artist: question.artist ?? '',
           title: question.title ?? '',
-          minusAudioId: minus?.id,
-          plusAudioId: plus?.id,
+          minusTrackId: trackFor(minus)?.id,
+          plusTrackId: trackFor(plus)?.id,
           createdAt: now,
           updatedAt: now,
         };
@@ -190,34 +238,41 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     rounds.push({ id: round.id, name: round.name, categories });
   }
 
+  const stages = rounds.map((round) => createRoundStage(round.id));
   const game: GameConfig = {
     id: gameId,
     title: legacy.config.title || 'Угадай мелодию',
     rounds,
+    interRounds: [],
+    stages,
     teams: legacy.config.teams,
     createdAt: now,
     updatedAt: now,
   };
 
-  const legacySession = legacy.session;
+  const legacyRoundIndex = Math.max(0, legacy.session.roundIndex ?? 0);
+  const stageIndex = Math.min(legacyRoundIndex, stages.length);
   const session: GameSession = {
     gameId,
-    started: legacySession.started ?? false,
-    roundIndex: legacySession.roundIndex ?? 0,
-    activeQuestionId: legacySession.activeQuestionId ?? null,
-    completedQuestionIds: legacySession.completedQuestionIds ?? [],
-    scores: legacySession.scores ?? {},
-    awardedTeamId: legacySession.awardedTeamId ?? null,
-    answerRevealed: legacySession.answerRevealed ?? Boolean(legacySession.awardedTeamId),
-    activeExcludedTeamIds: legacySession.activeExcludedTeamIds ?? [],
-    currentIncorrectTeamIds: legacySession.currentIncorrectTeamIds ?? [],
-    nextExcludedTeamIds: legacySession.nextExcludedTeamIds ?? [],
+    started: legacy.session.started ?? false,
+    stageIndex,
+    activeQuestionId: legacy.session.activeQuestionId ?? null,
+    completedQuestionIds: legacy.session.completedQuestionIds ?? [],
+    completedInterRoundIds: [],
+    interRound: null,
+    scores: legacy.session.scores ?? {},
+    awardedTeamId: legacy.session.awardedTeamId ?? null,
+    answerRevealed: legacy.session.answerRevealed ?? Boolean(legacy.session.awardedTeamId),
+    activeExcludedTeamIds: legacy.session.activeExcludedTeamIds ?? [],
+    currentIncorrectTeamIds: legacy.session.currentIncorrectTeamIds ?? [],
+    nextExcludedTeamIds: legacy.session.nextExcludedTeamIds ?? [],
   };
 
   return {
-    version: 2,
+    version: 4,
     games: [game],
     songs,
+    mediaTracks: [...trackByAudioId.values()],
     audioAssets: [...audioByHash.values()],
     sessions: [session],
     activeGameId: gameId,

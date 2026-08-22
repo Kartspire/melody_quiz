@@ -3,6 +3,7 @@ import { useUnit } from 'effector-react';
 import {
   $audioAssets,
   $games,
+  $mediaTracks,
   $persistedState,
   $sessions,
   $songs,
@@ -33,10 +34,11 @@ import { ActionMenu } from './ActionMenu';
 import { useEscapeClose } from './useEscapeClose';
 
 export function GameLibrary() {
-  const [games, sessions, songs, audioAssets, persistedState] = useUnit([
+  const [games, sessions, songs, mediaTracks, audioAssets, persistedState] = useUnit([
     $games,
     $sessions,
     $songs,
+    $mediaTracks,
     $audioAssets,
     $persistedState,
   ]);
@@ -52,10 +54,10 @@ export function GameLibrary() {
     const game = games.find((item) => item.id === gameId);
     if (screen === 'game' && game) {
       const session = sessions[gameId];
-      const finished = Boolean(session && session.roundIndex >= game.rounds.length);
+      const finished = Boolean(session && session.stageIndex >= game.stages.length);
       const issues = finished ? [] : hasSessionProgress(session)
-        ? getSessionContinuationIssues(game, session, songs, audioAssets)
-        : getGameStartIssues(game, songs, audioAssets);
+        ? getSessionContinuationIssues(game, session, songs, mediaTracks, audioAssets)
+        : getGameStartIssues(game, songs, mediaTracks, audioAssets);
       if (issues.length > 0) {
         window.alert(formatGameIssues(issues));
         activeGameChanged(gameId);
@@ -70,7 +72,7 @@ export function GameLibrary() {
   const startFresh = (gameId: string) => {
     const game = games.find((item) => item.id === gameId);
     if (!game) return;
-    const issues = getGameStartIssues(game, songs, audioAssets);
+    const issues = getGameStartIssues(game, songs, mediaTracks, audioAssets);
     if (issues.length > 0) {
       window.alert(formatGameIssues(issues));
       activeGameChanged(gameId);
@@ -86,7 +88,7 @@ export function GameLibrary() {
   const exportGame = async (game: GameConfig) => {
     try {
       setBusy(`export:${game.id}`);
-      const result = await exportGamePackage(game, songs, persistedState.audioAssets);
+      const result = await exportGamePackage(game, songs, persistedState.mediaTracks, persistedState.audioAssets);
       downloadBlob(result.blob, result.filename);
     } catch (error) {
       window.alert(errorMessage(error, 'Не удалось экспортировать игру.'));
@@ -201,7 +203,7 @@ export function GameLibrary() {
         {sortedGames.map((game) => {
           const session = sessions[game.id];
           const hasProgress = hasSessionProgress(session);
-          const finished = Boolean(session && session.roundIndex >= game.rounds.length);
+          const finished = Boolean(session && session.stageIndex >= game.stages.length);
           const questionCount = game.rounds.reduce(
             (total, round) => total + round.categories.reduce((sum, category) => sum + category.questions.length, 0),
             0,
@@ -220,7 +222,7 @@ export function GameLibrary() {
             <article className="game-library-card" key={game.id}>
               <div className="game-library-card__head">
                 <div>
-                  <span className="eyebrow">{game.rounds.length} раундов · {assignedSongs}/{questionCount} песен</span>
+                  <span className="eyebrow">{game.rounds.length} раундов{game.interRounds.length ? ` · ${game.interRounds.length} межраундов` : ''} · {assignedSongs}/{questionCount} песен</span>
                   <h2>{game.title || 'Без названия'}</h2>
                 </div>
                 {hasProgress && <span className="session-badge">Сессия сохранена</span>}
@@ -335,12 +337,18 @@ function ImportVerificationSummary({
   stats: PreparedGameImport['media']['stats'];
 }) {
   const songsTotal = stats.newSongs + stats.reusedSongs + stats.deduplicatedSongs;
+  const tracksTotal = stats.newTracks + stats.reusedTracks + stats.deduplicatedTracks;
   const audioTotal = stats.newAudio + stats.reusedAudio;
-  const nothingNew = stats.newSongs === 0 && stats.newAudio === 0;
+  const nothingNew = stats.newSongs === 0 && stats.newTracks === 0 && stats.newAudio === 0;
   const songDetails = [
     `${stats.reusedSongs} уже в медиатеке`,
     `будет добавлено: ${stats.newSongs}`,
     stats.deduplicatedSongs > 0 ? `${stats.deduplicatedSongs} совпали внутри архива` : '',
+  ].filter(Boolean).join(' · ');
+  const trackDetails = [
+    `${stats.reusedTracks} уже в медиатеке`,
+    `будет добавлено: ${stats.newTracks}`,
+    stats.deduplicatedTracks > 0 ? `${stats.deduplicatedTracks} совпали внутри архива` : '',
   ].filter(Boolean).join(' · ');
   const audioDetails = [
     `${stats.reusedAudio} уже в медиатеке`,
@@ -364,14 +372,15 @@ function ImportVerificationSummary({
 
       <div className="import-verification__content">
         <strong className="import-section-title">Что будет импортировано</strong>
-        <div className="import-summary-grid">
+        <div className="import-summary-grid import-summary-grid--three">
           <ImportSummaryCard label="Песни" total={songsTotal} details={songDetails} />
-          <ImportSummaryCard label="Аудиофайлы" total={audioTotal} details={audioDetails} />
+          <ImportSummaryCard label="Аудиотреки" total={tracksTotal} details={trackDetails} />
+          <ImportSummaryCard label="Физические файлы" total={audioTotal} details={audioDetails} />
         </div>
         <p className="import-dedup-note">
           {nothingNew
-            ? 'Все необходимые песни и аудиофайлы уже есть в медиатеке. Дубликаты созданы не будут.'
-            : 'Существующие песни и аудиофайлы будут переиспользованы. В медиатеку добавится только новое содержимое.'}
+            ? 'Все необходимые песни, аудиотреки и файлы уже есть в медиатеке. Дубликаты созданы не будут.'
+            : 'Существующие песни, аудиотреки и физические файлы будут переиспользованы. Добавится только новое содержимое.'}
         </p>
       </div>
     </div>

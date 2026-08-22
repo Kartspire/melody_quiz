@@ -1,15 +1,17 @@
 import { canonicalizeAudioAsset } from './audio';
-import { createInitialState, createSession, migrateLegacyState } from '../model/defaults';
+import { createInitialState, createMediaTrack, createSession, migrateLegacyState } from '../model/defaults';
 import { reconcileSession } from '../model/session';
+import { normalizeGameConfig } from '../model/migrations';
 import { assertValidPersistedState } from '../model/validation';
-import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, PersistedState, Song } from '../model/types';
+import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, MediaTrack, PersistedState, Song } from '../model/types';
 
 const DB_NAME = 'melody-quiz-db';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 const LEGACY_STORE = 'state';
 const LEGACY_STATE_KEY = 'app-state';
 const GAMES_STORE = 'games';
 const SONGS_STORE = 'songs';
+const MEDIA_TRACKS_STORE = 'media-tracks';
 const AUDIO_STORE = 'audio';
 const SESSIONS_STORE = 'sessions';
 const META_STORE = 'meta';
@@ -61,6 +63,7 @@ const openDatabase = () =>
       if (!db.objectStoreNames.contains(LEGACY_STORE)) db.createObjectStore(LEGACY_STORE);
       if (!db.objectStoreNames.contains(GAMES_STORE)) db.createObjectStore(GAMES_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(SONGS_STORE)) db.createObjectStore(SONGS_STORE, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(MEDIA_TRACKS_STORE)) db.createObjectStore(MEDIA_TRACKS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(AUDIO_STORE)) db.createObjectStore(AUDIO_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(SESSIONS_STORE)) db.createObjectStore(SESSIONS_STORE, { keyPath: 'gameId' });
       if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
@@ -81,13 +84,14 @@ export const loadState = async (): Promise<PersistedState> => {
   const db = await openDatabase();
   try {
     const transaction = db.transaction(
-      [GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
+      [GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
       'readonly',
     );
 
-    const [games, songs, rawAudioAssets, sessions, activeGameId, initialized, revision, legacy] = await Promise.all([
+    const [games, songs, mediaTracks, rawAudioAssets, sessions, activeGameId, initialized, revision, legacy] = await Promise.all([
       requestValue(transaction.objectStore(GAMES_STORE).getAll() as IDBRequest<GameConfig[]>),
-      requestValue(transaction.objectStore(SONGS_STORE).getAll() as IDBRequest<Song[]>),
+      requestValue(transaction.objectStore(SONGS_STORE).getAll() as IDBRequest<StoredSong[]>),
+      requestValue(transaction.objectStore(MEDIA_TRACKS_STORE).getAll() as IDBRequest<MediaTrack[]>),
       requestValue(transaction.objectStore(AUDIO_STORE).getAll() as IDBRequest<Array<Partial<AudioAsset> & { size?: number }>>),
       requestValue(transaction.objectStore(SESSIONS_STORE).getAll() as IDBRequest<GameSession[]>),
       requestValue(transaction.objectStore(META_STORE).get(ACTIVE_GAME_KEY) as IDBRequest<string | null | undefined>),
@@ -100,9 +104,9 @@ export const loadState = async (): Promise<PersistedState> => {
 
     if (games.length > 0 || initialized) {
       const canonical = await canonicalizeLoadedState({
-        version: 2,
         games,
         songs,
+        mediaTracks,
         audioAssets: rawAudioAssets,
         sessions,
         activeGameId: games.some((game) => game.id === activeGameId) ? activeGameId! : games[0]?.id ?? null,
@@ -140,7 +144,7 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
   assertValidPersistedState(state);
   const db = await openDatabase();
   try {
-    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
     const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
@@ -166,9 +170,10 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
 async function rewriteCanonicalState(state: PersistedState, allowCurrentRevision: boolean): Promise<void> {
   const db = await openDatabase();
   try {
-    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
     const gamesStore = transaction.objectStore(GAMES_STORE);
     const songsStore = transaction.objectStore(SONGS_STORE);
+    const mediaTracksStore = transaction.objectStore(MEDIA_TRACKS_STORE);
     const audioStore = transaction.objectStore(AUDIO_STORE);
     const sessionsStore = transaction.objectStore(SESSIONS_STORE);
     const metaStore = transaction.objectStore(META_STORE);
@@ -181,10 +186,12 @@ async function rewriteCanonicalState(state: PersistedState, allowCurrentRevision
 
     gamesStore.clear();
     songsStore.clear();
+    mediaTracksStore.clear();
     audioStore.clear();
     sessionsStore.clear();
     state.games.forEach((game) => gamesStore.put(game));
     state.songs.forEach((song) => songsStore.put(song));
+    state.mediaTracks.forEach((track) => mediaTracksStore.put(track));
     state.audioAssets.forEach((asset) => audioStore.put(asset));
     state.sessions.forEach((session) => sessionsStore.put(session));
     metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
@@ -211,6 +218,13 @@ function applyStateDiff(transaction: IDBTransaction, previous: PersistedState | 
     transaction.objectStore(SONGS_STORE),
     previous?.songs ?? [],
     next.songs,
+    (item) => item.id,
+    (before, after) => before.updatedAt === after.updatedAt && before === after,
+  );
+  syncStore(
+    transaction.objectStore(MEDIA_TRACKS_STORE),
+    previous?.mediaTracks ?? [],
+    next.mediaTracks,
     (item) => item.id,
     (before, after) => before.updatedAt === after.updatedAt && before === after,
   );
@@ -249,23 +263,25 @@ function syncStore<T>(
   }
 }
 
+type StoredSong = Song & { minusAudioId?: string; plusAudioId?: string; minusTrackId?: string; plusTrackId?: string };
+
 async function canonicalizeLoadedState(raw: {
-  version: 2;
   games: GameConfig[];
-  songs: Song[];
+  songs: StoredSong[];
+  mediaTracks: MediaTrack[];
   audioAssets: Array<Partial<AudioAsset> & { size?: number }>;
   sessions: GameSession[];
   activeGameId: string | null;
 }): Promise<{ state: PersistedState; changed: boolean }> {
   const audioAssets: AudioAsset[] = [];
   const canonicalByHash = new Map<string, AudioAsset>();
-  const oldToNewId = new Map<string, string>();
+  const oldToNewAudioId = new Map<string, string>();
   let changed = false;
 
   for (const rawAsset of raw.audioAssets) {
     const oldId = typeof rawAsset.id === 'string' ? rawAsset.id : '';
     const canonical = await canonicalizeAudioAsset(rawAsset);
-    if (oldId) oldToNewId.set(oldId, canonical.id);
+    if (oldId) oldToNewAudioId.set(oldId, canonical.id);
     if (oldId !== canonical.id || rawAsset.sha256 !== canonical.sha256 || rawAsset.verified !== true || 'size' in rawAsset) changed = true;
     if (!canonicalByHash.has(canonical.id)) {
       canonicalByHash.set(canonical.id, canonical);
@@ -275,14 +291,67 @@ async function canonicalizeLoadedState(raw: {
     }
   }
 
-  const songs = raw.songs.map((song) => {
-    const minusAudioId = song.minusAudioId ? oldToNewId.get(song.minusAudioId) ?? song.minusAudioId : undefined;
-    const plusAudioId = song.plusAudioId ? oldToNewId.get(song.plusAudioId) ?? song.plusAudioId : undefined;
-    if (minusAudioId !== song.minusAudioId || plusAudioId !== song.plusAudioId) changed = true;
-    return { ...song, minusAudioId, plusAudioId };
+  const mediaTracks: MediaTrack[] = [];
+  const trackById = new Map<string, MediaTrack>();
+  const firstTrackByAudioId = new Map<string, MediaTrack>();
+  for (const rawTrack of raw.mediaTracks ?? []) {
+    const audioId = oldToNewAudioId.get(rawTrack.audioId) ?? rawTrack.audioId;
+    const track = audioId === rawTrack.audioId ? rawTrack : { ...rawTrack, audioId, updatedAt: Date.now() };
+    if (audioId !== rawTrack.audioId) changed = true;
+    if (trackById.has(track.id)) {
+      changed = true;
+      continue;
+    }
+    trackById.set(track.id, track);
+    if (!firstTrackByAudioId.has(track.audioId)) firstTrackByAudioId.set(track.audioId, track);
+    mediaTracks.push(track);
+  }
+
+  const ensureTrackForLegacyAudio = (legacyAudioId: string | undefined, roleName: string) => {
+    if (!legacyAudioId) return undefined;
+    const audioId = oldToNewAudioId.get(legacyAudioId) ?? legacyAudioId;
+    const existing = firstTrackByAudioId.get(audioId);
+    if (existing) return existing.id;
+    const asset = canonicalByHash.get(audioId);
+    if (!asset) return undefined;
+    const track = createMediaTrack(asset, roleName || asset.name);
+    mediaTracks.push(track);
+    trackById.set(track.id, track);
+    firstTrackByAudioId.set(audioId, track);
+    changed = true;
+    return track.id;
+  };
+
+  const songs: Song[] = raw.songs.map((rawSong) => {
+    const legacyMinusAudioId = rawSong.minusAudioId;
+    const legacyPlusAudioId = rawSong.plusAudioId;
+    const minusTrackId = rawSong.minusTrackId ?? ensureTrackForLegacyAudio(
+      legacyMinusAudioId,
+      `${rawSong.artist || 'Без исполнителя'} — ${rawSong.title || 'Без названия'} (минус)`,
+    );
+    const plusTrackId = rawSong.plusTrackId ?? ensureTrackForLegacyAudio(
+      legacyPlusAudioId,
+      `${rawSong.artist || 'Без исполнителя'} — ${rawSong.title || 'Без названия'} (плюс)`,
+    );
+    if (legacyMinusAudioId !== undefined || legacyPlusAudioId !== undefined || !('minusTrackId' in rawSong) || !('plusTrackId' in rawSong)) changed = true;
+    return {
+      id: rawSong.id,
+      artist: rawSong.artist,
+      title: rawSong.title,
+      minusTrackId,
+      plusTrackId,
+      createdAt: rawSong.createdAt,
+      updatedAt: rawSong.updatedAt,
+    };
   });
 
-  const gameById = new Map(raw.games.map((game) => [game.id, game]));
+  const normalizedGames = raw.games.map((rawGame) => {
+    const normalized = normalizeGameConfig(rawGame);
+    if (normalized.changed) changed = true;
+    return normalized.game;
+  });
+
+  const gameById = new Map(normalizedGames.map((game) => [game.id, game]));
   const sessionsByGameId = new Map<string, GameSession>();
   for (const rawSession of raw.sessions) {
     const game = gameById.get(rawSession?.gameId);
@@ -294,17 +363,24 @@ async function canonicalizeLoadedState(raw: {
     if (JSON.stringify(reconciled) !== JSON.stringify(rawSession)) changed = true;
     sessionsByGameId.set(game.id, reconciled);
   }
-  for (const game of raw.games) {
+  for (const game of normalizedGames) {
     if (!sessionsByGameId.has(game.id)) {
       sessionsByGameId.set(game.id, createSession(game));
       changed = true;
     }
   }
-  const sessions = [...sessionsByGameId.values()];
 
   return {
     changed,
-    state: { ...raw, songs, audioAssets, sessions },
+    state: {
+      version: 4,
+      games: normalizedGames,
+      songs,
+      mediaTracks,
+      audioAssets,
+      sessions: [...sessionsByGameId.values()],
+      activeGameId: raw.activeGameId,
+    },
   };
 }
 

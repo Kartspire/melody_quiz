@@ -5,6 +5,7 @@ import {
   $audioAssets,
   $games,
   $hydrated,
+  $mediaTracks,
   $screen,
   $storageError,
   $storageReadOnly,
@@ -26,13 +27,14 @@ import { Scoreboard } from '../components/Scoreboard';
 import { SettingsPage } from '../components/SettingsPage';
 
 export function App() {
-  const [screen, hydrated, activeGame, games, sessions, songs, audioAssets, storageError, storageReadOnly, storageSaveStatus] = useUnit([
+  const [screen, hydrated, activeGame, games, sessions, songs, mediaTracks, audioAssets, storageError, storageReadOnly, storageSaveStatus] = useUnit([
     $screen,
     $hydrated,
     $activeGame,
     $games,
     $sessions,
     $songs,
+    $mediaTracks,
     $audioAssets,
     $storageError,
     $storageReadOnly,
@@ -45,7 +47,7 @@ export function App() {
   );
   const sidebarGame = activeGame && hasSessionProgress(sessions[activeGame.id]) ? activeGame : savedSessionGames[0] ?? null;
   const sidebarSession = sidebarGame ? sessions[sidebarGame.id] : null;
-  const sidebarFinished = Boolean(sidebarGame && sidebarSession && sidebarSession.roundIndex >= sidebarGame.rounds.length);
+  const sidebarFinished = Boolean(sidebarGame && sidebarSession && sidebarSession.stageIndex >= sidebarGame.stages.length);
 
   if (!hydrated) {
     if (storageError) {
@@ -114,11 +116,11 @@ export function App() {
             <small>
               {sidebarFinished
                 ? `Сыграно ${sidebarSession.completedQuestionIds.length} вопросов`
-                : `Раунд ${sidebarSession.roundIndex + 1} · сыграно ${sidebarSession.completedQuestionIds.length}`}
+                : `Этап ${Math.min(sidebarSession.stageIndex + 1, sidebarGame.stages.length)} из ${sidebarGame.stages.length} · сыграно ${sidebarSession.completedQuestionIds.length}`}
               {savedSessionGames.length > 1 ? ` · ещё партий: ${savedSessionGames.length - 1}` : ''}
             </small>
             <button onClick={() => {
-              const issues = sidebarFinished ? [] : getSessionContinuationIssues(sidebarGame, sidebarSession, songs, audioAssets);
+              const issues = sidebarFinished ? [] : getSessionContinuationIssues(sidebarGame, sidebarSession, songs, mediaTracks, audioAssets);
               activeGameChanged(sidebarGame.id);
               if (issues.length > 0) {
                 window.alert('Игра была изменена и сейчас не готова к продолжению. Откройте редактор и исправьте недостающие песни/аудио.');
