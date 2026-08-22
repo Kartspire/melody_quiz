@@ -9,15 +9,18 @@ import {
   songAudioChanged,
   songChanged,
   songDeleteRequested,
+  songDuplicated,
 } from '../model/game';
 import { createAudioAsset } from '../model/defaults';
 import type { AudioAsset } from '../model/types';
+import { DATA_LIMITS } from '../model/limits';
 import {
   downloadBlob,
   exportLibraryPackage,
   finalizeLibraryImport,
   parseMelodyPackage,
   prepareMediaMerge,
+  type ParsedMelodyPackage,
   type PreparedMediaMerge,
 } from '../lib/melodyPackage';
 import { ActionMenu } from './ActionMenu';
@@ -29,7 +32,7 @@ export function MediaLibrary() {
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
-  const [pendingImport, setPendingImport] = useState<PreparedMediaMerge | null>(null);
+  const [pendingImport, setPendingImport] = useState<{ packageData: ParsedMelodyPackage; preview: PreparedMediaMerge } | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(() => {
@@ -79,8 +82,8 @@ export function MediaLibrary() {
       if (packageData.manifest.type !== 'melody-library') {
         throw new Error('Это архив отдельной игры. Импортируйте его на экране «Мои игры».');
       }
-      const prepared = await prepareMediaMerge(packageData, songs, persistedState.audioAssets);
-      setPendingImport(prepared);
+      const preview = await prepareMediaMerge(packageData, songs, persistedState.audioAssets);
+      setPendingImport({ packageData, preview });
     } catch (error) {
       window.alert(errorMessage(error, 'Не удалось импортировать медиатеку.'));
     } finally {
@@ -93,7 +96,8 @@ export function MediaLibrary() {
     if (!pendingImport) return;
     try {
       setBusy('import');
-      await persistedStateImportFx(finalizeLibraryImport(pendingImport, persistedState));
+      const latestPrepared = await prepareMediaMerge(pendingImport.packageData, persistedState.songs, persistedState.audioAssets);
+      await persistedStateImportFx(finalizeLibraryImport(latestPrepared, persistedState));
       setPendingImport(null);
     } catch (error) {
       window.alert(errorMessage(error, 'Не удалось сохранить импортированную медиатеку.'));
@@ -163,13 +167,17 @@ export function MediaLibrary() {
                 <div className="media-song-card__main">
                   <label className="field">
                     <span>Исполнитель</span>
-                    <input value={song.artist} onChange={(event) => songChanged({ songId: song.id, patch: { artist: event.target.value } })} />
+                    <input maxLength={DATA_LIMITS.text.artist} value={song.artist} onChange={(event) => songChanged({ songId: song.id, patch: { artist: event.target.value } })} />
                   </label>
                   <label className="field">
                     <span>Название</span>
-                    <input value={song.title} onChange={(event) => songChanged({ songId: song.id, patch: { title: event.target.value } })} />
+                    <input maxLength={DATA_LIMITS.text.songTitle} value={song.title} onChange={(event) => songChanged({ songId: song.id, patch: { title: event.target.value } })} />
                   </label>
                 </div>
+
+                {usages.length > 0 && (
+                  <div className="backup-hint">Изменения этой песни затронут {usages.length} {usages.length === 1 ? 'игру' : 'игры'}, где она уже используется.</div>
+                )}
 
                 <div className="media-audio-grid">
                   <StoredAudioField songId={song.id} kind="minus" label="Минус" asset={minus} usedInGames={usages.length > 0} />
@@ -186,7 +194,9 @@ export function MediaLibrary() {
                       </span>
                     )}
                   </div>
-                  <button
+                  <div className="media-song-card__footer-actions">
+                    <button className="secondary-button" onClick={() => songDuplicated(song.id)}>Создать отдельную копию</button>
+                    <button
                     className="danger-ghost"
                     title="Удалить песню"
                     onClick={() => {
@@ -198,7 +208,8 @@ export function MediaLibrary() {
                     }}
                   >
                     Удалить песню
-                  </button>
+                    </button>
+                  </div>
                 </div>
               </article>
             );
@@ -208,7 +219,7 @@ export function MediaLibrary() {
 
       {pendingImport && (
         <LibraryImportDialog
-          prepared={pendingImport}
+          prepared={pendingImport.preview}
           onCancel={() => setPendingImport(null)}
           onImport={() => void applyLibraryImport()}
         />
@@ -239,7 +250,7 @@ function LibraryImportDialog({ prepared, onCancel, onImport }: { prepared: Prepa
 }
 
 function LibraryImportSummary({ stats }: { stats: PreparedMediaMerge['stats'] }) {
-  const songsTotal = stats.newSongs + stats.reusedSongs;
+  const songsTotal = stats.newSongs + stats.reusedSongs + stats.deduplicatedSongs;
   const audioTotal = stats.newAudio + stats.reusedAudio;
 
   return (
@@ -261,12 +272,12 @@ function LibraryImportSummary({ stats }: { stats: PreparedMediaMerge['stats'] })
           <div className="import-summary-card">
             <span>Песни</span>
             <strong>{songsTotal} всего</strong>
-            <small>{stats.reusedSongs} уже есть · {stats.newSongs} новых</small>
+            <small>{stats.reusedSongs} уже есть · {stats.newSongs} новых{stats.deduplicatedSongs > 0 ? ` · ${stats.deduplicatedSongs} совпали внутри архива` : ''}</small>
           </div>
           <div className="import-summary-card">
             <span>Аудиофайлы</span>
             <strong>{audioTotal} всего</strong>
-            <small>{stats.reusedAudio} уже есть · {stats.newAudio} новых</small>
+            <small>{stats.reusedAudio} уже есть · {stats.newAudio} новых{stats.internalAudioReuses > 0 ? ` · ${stats.internalAudioReuses} внутренних переиспользований` : ''}</small>
           </div>
         </div>
       </div>
@@ -275,24 +286,43 @@ function LibraryImportSummary({ stats }: { stats: PreparedMediaMerge['stats'] })
 }
 
 function StoredAudioField({ songId, kind, label, asset, usedInGames }: { songId: string; kind: 'minus' | 'plus'; label: string; asset?: AudioAsset; usedInGames: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const replaceFile = async (file: File) => {
+    if (usedInGames && asset && !window.confirm(`Эта песня используется в играх. Замена ${label.toLowerCase()} изменит её во всех этих играх. Продолжить?`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const nextAsset = await createAudioAsset(file);
+      songAudioChanged({ songId, kind, asset: nextAsset });
+    } catch (replaceError) {
+      setError(replaceError instanceof Error ? replaceError.message : 'Не удалось загрузить аудиофайл.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="stored-audio-field">
       <div className="stored-audio-field__head"><strong>{label}</strong><span>{asset?.name ?? 'не загружен'}</span></div>
       {asset && <AudioPreview asset={asset} />}
+      {error && <small className="missing-audio" role="alert">{error}</small>}
       <div className="inline-actions">
         <label className="secondary-button file-button">
-          {asset ? 'Заменить' : 'Загрузить'}
+          {busy ? 'Проверяем…' : asset ? 'Заменить' : 'Загрузить'}
           <input
             type="file"
-            accept="audio/*"
+            disabled={busy}
+            accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4"
             onChange={(event) => {
               const file = event.target.files?.[0];
-              if (file) songAudioChanged({ songId, kind, asset: createAudioAsset(file) });
+              if (file) void replaceFile(file);
               event.currentTarget.value = '';
             }}
           />
         </label>
-        {asset && <button className="text-button" onClick={() => {
+        {asset && <button className="text-button" disabled={busy} onClick={() => {
           if (usedInGames && !window.confirm(`Эта песня используется в играх. После удаления ${label.toLowerCase()} эти игры не запустятся, пока вы не загрузите файл заново. Продолжить?`)) return;
           songAudioChanged({ songId, kind, asset: undefined });
         }}>Удалить файл</button>}

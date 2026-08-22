@@ -7,12 +7,15 @@ import {
   $hydrated,
   $screen,
   $storageError,
+  $storageReadOnly,
+  $storageSaveStatus,
   $sessions,
   $songs,
   activeGameChanged,
-  getGameStartIssues,
+  getSessionContinuationIssues,
   hasSessionProgress,
   screenChanged,
+  storageRetryRequested,
 } from '../model/game';
 import type { Screen } from '../model/types';
 import { AdminPanel } from '../components/AdminPanel';
@@ -23,7 +26,7 @@ import { Scoreboard } from '../components/Scoreboard';
 import { SettingsPage } from '../components/SettingsPage';
 
 export function App() {
-  const [screen, hydrated, activeGame, games, sessions, songs, audioAssets, storageError] = useUnit([
+  const [screen, hydrated, activeGame, games, sessions, songs, audioAssets, storageError, storageReadOnly, storageSaveStatus] = useUnit([
     $screen,
     $hydrated,
     $activeGame,
@@ -32,6 +35,8 @@ export function App() {
     $songs,
     $audioAssets,
     $storageError,
+    $storageReadOnly,
+    $storageSaveStatus,
   ]);
 
   const savedSessionGames = useMemo(
@@ -43,7 +48,28 @@ export function App() {
   const sidebarFinished = Boolean(sidebarGame && sidebarSession && sidebarSession.roundIndex >= sidebarGame.rounds.length);
 
   if (!hydrated) {
+    if (storageError) {
+      return (
+        <div className="app-loader storage-recovery">
+          <strong>Не удалось безопасно открыть локальные данные</strong>
+          <span>{storageError}</span>
+          <button className="primary-button" onClick={() => storageRetryRequested()}>Повторить загрузку</button>
+          <small>Редактирование заблокировано, чтобы пустое состояние не перезаписало существующую базу.</small>
+        </div>
+      );
+    }
     return <div className="app-loader"><div className="loader-disc" /><span>Загружаем библиотеку игр…</span></div>;
+  }
+
+  if (storageReadOnly) {
+    return (
+      <div className="app-loader storage-recovery">
+        <strong>Данные изменились в другой вкладке</strong>
+        <span>{storageError || 'Эта вкладка остановлена, чтобы не перезаписать более новую версию локальной базы.'}</span>
+        <button className="primary-button" onClick={() => window.location.reload()}>Загрузить актуальные данные</button>
+        <small>Несохранённые изменения этой вкладки намеренно не записываются поверх более новой версии.</small>
+      </div>
+    );
   }
 
   if (screen === 'game' && activeGame) {
@@ -79,6 +105,7 @@ export function App() {
         </nav>
 
         <div className="sidebar-spacer" />
+        <small className="storage-save-status">{storageSaveStatus === 'saving' ? 'Сохраняем…' : storageSaveStatus === 'error' ? 'Ошибка сохранения' : storageSaveStatus === 'saved' ? 'Изменения сохранены' : ''}</small>
 
         {sidebarGame && sidebarSession && (
           <section className="active-session-card">
@@ -91,7 +118,7 @@ export function App() {
               {savedSessionGames.length > 1 ? ` · ещё партий: ${savedSessionGames.length - 1}` : ''}
             </small>
             <button onClick={() => {
-              const issues = sidebarFinished ? [] : getGameStartIssues(sidebarGame, songs, audioAssets);
+              const issues = sidebarFinished ? [] : getSessionContinuationIssues(sidebarGame, sidebarSession, songs, audioAssets);
               activeGameChanged(sidebarGame.id);
               if (issues.length > 0) {
                 window.alert('Игра была изменена и сейчас не готова к продолжению. Откройте редактор и исправьте недостающие песни/аудио.');
@@ -128,8 +155,11 @@ function SidebarButton({ screen, target, icon, label }: { screen: Screen; target
 function StorageErrorBanner({ message }: { message: string }) {
   return (
     <div className="storage-error-banner" role="alert">
-      <strong>Данные сейчас не защищены</strong>
-      <span>{message}</span>
+      <div className="storage-error-banner__text">
+        <strong>Данные сейчас не защищены</strong>
+        <span>{message}</span>
+      </div>
+      <button className="secondary-button" onClick={() => window.location.reload()}>Перезагрузить</button>
     </div>
   );
 }

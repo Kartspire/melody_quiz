@@ -1,0 +1,51 @@
+import { describe, expect, it } from 'vitest';
+import { createGame, createSession } from './defaults';
+import { assertValidGameStructure, assertValidPersistedState, getGameStartIssues, getSessionContinuationIssues } from './validation';
+import type { PersistedState, Song } from './types';
+
+const emptyState = (): PersistedState => ({ version: 2, games: [], songs: [], audioAssets: [], sessions: [], activeGameId: null });
+
+describe('game validation', () => {
+  it('rejects game structures that the editor must not import', () => {
+    const game = createGame('Тест');
+    game.rounds[0].categories[0].questions[0].points = 0;
+    expect(() => assertValidGameStructure(game)).toThrow(/стоимость/i);
+
+    game.rounds[0].categories[0].questions[0].points = 100;
+    game.teams[1].name = game.teams[0].name;
+    expect(() => assertValidGameStructure(game)).toThrow(/название/i);
+  });
+
+  it('rejects timestamps outside the supported Date range', () => {
+    const game = createGame('Тест');
+    game.updatedAt = 1e300;
+    expect(() => assertValidGameStructure(game)).toThrow(/дата/i);
+  });
+
+  it('allows safe editor drafts in local persistence', () => {
+    const game = createGame('');
+    game.rounds[0].name = '';
+    game.rounds[0].categories[0].name = '';
+    game.teams[0].name = '';
+    const state = emptyState();
+    state.games = [game];
+    state.sessions = [createSession(game)];
+    state.activeGameId = game.id;
+    expect(() => assertValidPersistedState(state)).not.toThrow();
+  });
+
+  it('does not require audio from questions already completed in a saved session', () => {
+    const game = createGame('Тест');
+    const question = game.rounds[0].categories[0].questions[0];
+    const now = Date.now();
+    const song: Song = { id: 'song-1', artist: 'Исполнитель', title: 'Песня', createdAt: now, updatedAt: now };
+    question.songId = song.id;
+
+    expect(getGameStartIssues(game, [song], []).some((issue) => issue.includes('минус'))).toBe(true);
+    const session = createSession(game);
+    session.completedQuestionIds = [question.id];
+    // Other unassigned questions still produce issues, but the completed song must not.
+    const issues = getSessionContinuationIssues(game, session, [song], []);
+    expect(issues.some((issue) => issue.includes('вопрос 1') && issue.includes('минус'))).toBe(false);
+  });
+});

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeGame,
@@ -14,7 +15,6 @@ import {
   nobodyGuessed,
   questionClosed,
   questionOpened,
-  resolveQuestion,
   screenChanged,
   teamAwarded,
   teamIncorrectToggled,
@@ -31,6 +31,9 @@ export function GameBoard() {
     $songs,
     $audioAssets,
   ]);
+
+  const songById = useMemo(() => new Map(songs.map((song) => [song.id, song])), [songs]);
+  const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
 
   if (!config || !session) return null;
 
@@ -128,8 +131,8 @@ export function GameBoard() {
               <div className="board-category__questions">
                 {category.questions.map((question) => {
                   const completed = session.completedQuestionIds.includes(question.id);
-                  const playable = resolveQuestion(question, songs, audioAssets);
-                  const hasMinus = Boolean(playable.minus);
+                  const song = question.songId ? songById.get(question.songId) : undefined;
+                  const hasMinus = Boolean(song?.minusAudioId && audioById.has(song.minusAudioId));
                   return completed ? (
                     <div className="question-slot question-slot--empty" key={question.id} aria-label="Вопрос разыгран" />
                   ) : (

@@ -1,7 +1,9 @@
 import { combine, createEffect, createEvent, createStore, sample } from 'effector';
-import { loadState, saveState } from '../lib/storage';
-import { cloneGame, createCategory, createGame, createQuestion, createRound, createSession, createTeam } from './defaults';
-import { GAME_LIMITS } from './limits';
+import { loadState, saveState, StorageConflictError, subscribeToExternalStorageChanges } from '../lib/storage';
+import { getGameStartIssues, getSessionContinuationIssues, isSha256 } from './validation';
+import { cloneGame, cloneSong, createCategory, createGame, createQuestion, createRound, createSession, createTeam } from './defaults';
+import { DATA_LIMITS, GAME_LIMITS } from './limits';
+import { findQuestion, isRoundComplete, normalizeSession, reconcileSession } from './session';
 import type {
   AudioAsset,
   GameConfig,
@@ -17,6 +19,9 @@ import type {
 const initialGame = createGame('Угадай мелодию');
 
 export const appStarted = createEvent();
+export const storageRetryRequested = createEvent();
+const externalStorageChangeDetected = createEvent<number>();
+const storageErrorCleared = createEvent();
 export const screenChanged = createEvent<Screen>();
 export const activeGameChanged = createEvent<string>();
 export const gameCreated = createEvent<string>();
@@ -60,6 +65,7 @@ export const teamChanged = createEvent<{ teamId: string; patch: Partial<Pick<Tea
 
 export const songAdded = createEvent<{ song: Song; audioAssets: AudioAsset[] }>();
 export const songChanged = createEvent<{ songId: string; patch: Partial<Pick<Song, 'artist' | 'title'>> }>();
+export const songDuplicated = createEvent<string>();
 export const songAudioChanged = createEvent<{
   songId: string;
   kind: 'minus' | 'plus';
@@ -85,11 +91,31 @@ const saveFx = createEffect(saveState);
 export const $storageError = createStore<string | null>(null)
   .on(loadFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось открыть локальное хранилище.'))
   .on(saveFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось сохранить изменения в локальное хранилище.'))
+  .on(externalStorageChangeDetected, () => 'Данные были изменены в другой вкладке. Эта вкладка переведена в режим только чтения, чтобы не затереть более новую версию. Перезагрузите страницу.')
   .on(loadFx.done, () => null)
-  .on(saveFx.done, () => null);
+  .on(storageErrorCleared, () => null);
+
+export const $storageReadOnly = createStore(false)
+  .on(externalStorageChangeDetected, () => true)
+  .on(saveFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly)
+  .on(loadFx.done, () => false);
+
+export const $storageSaveStatus = createStore<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  .on(saveFx, () => 'saving')
+  .on(saveFx.done, () => 'saved')
+  .on(saveFx.fail, () => 'error');
+
+sample({
+  clock: saveFx.done,
+  source: $storageReadOnly,
+  filter: (readOnly) => !readOnly,
+  target: storageErrorCleared,
+});
 
 export const $screen = createStore<Screen>('library').on(screenChanged, (_, screen) => screen);
-export const $hydrated = createStore(false).on(loadFx.finally, () => true);
+export const $hydrated = createStore(false)
+  .on(loadFx.done, () => true)
+  .on(loadFx.fail, () => false);
 export const $games = createStore<GameConfig[]>([initialGame]);
 export const $songs = createStore<Song[]>([]);
 export const $audioAssets = createStore<AudioAsset[]>([]);
@@ -120,10 +146,24 @@ $games
 
 $songs
   .on(loadFx.doneData, (_, state) => state.songs)
-  .on(songAdded, (songs, { song }) => [...songs, song])
-  .on(songChanged, (songs, { songId, patch }) =>
-    songs.map((song) => (song.id === songId ? { ...song, ...patch, updatedAt: Date.now() } : song)),
-  )
+  .on(songAdded, (songs, { song }) => {
+    if (songs.some((item) => item.id === song.id)) return songs;
+    if (song.artist.length > DATA_LIMITS.text.artist || song.title.length > DATA_LIMITS.text.songTitle || (!song.artist.trim() && !song.title.trim())) return songs;
+    return [...songs, song];
+  })
+  .on(songDuplicated, (songs, songId) => {
+    const source = songs.find((song) => song.id === songId);
+    return source ? [...songs, cloneSong(source)] : songs;
+  })
+  .on(songChanged, (songs, { songId, patch }) => {
+    if ((patch.artist !== undefined && patch.artist.length > DATA_LIMITS.text.artist) || (patch.title !== undefined && patch.title.length > DATA_LIMITS.text.songTitle)) return songs;
+    return songs.map((song) => {
+      if (song.id !== songId) return song;
+      const next = { ...song, ...patch };
+      if (!next.artist.trim() && !next.title.trim()) return song;
+      return { ...next, updatedAt: Date.now() };
+    });
+  })
   .on(songAudioChangeApplied, (songs, { songId, kind, asset }) =>
     songs.map((song) =>
       song.id === songId
@@ -140,7 +180,11 @@ $songs
 
 $audioAssets
   .on(loadFx.doneData, (_, state) => state.audioAssets)
-  .on(songAdded, (assets, { audioAssets }) => [...assets, ...audioAssets])
+  .on(songAdded, (assets, { audioAssets }) => {
+    const byId = new Map(assets.map((asset) => [asset.id, asset]));
+    audioAssets.forEach((asset) => byId.set(asset.id, asset));
+    return [...byId.values()];
+  })
   .on(songAudioChangeApplied, (assets, { asset, previousAudioId, removePrevious }) => {
     let next = removePrevious && previousAudioId ? assets.filter((item) => item.id !== previousAudioId) : assets;
     if (asset && !next.some((item) => item.id === asset.id)) next = [...next, asset];
@@ -153,7 +197,10 @@ $audioAssets
   .on(persistedStateImported, (_, state) => state.audioAssets);
 
 $sessions
-  .on(loadFx.doneData, (_, state) => Object.fromEntries(state.sessions.map((session) => [session.gameId, normalizeSession(session)])))
+  .on(loadFx.doneData, (_, state) => Object.fromEntries(state.sessions.map((session) => {
+    const game = state.games.find((item) => item.id === session.gameId);
+    return [session.gameId, game ? reconcileSession(game, session) : normalizeSession(session)];
+  })))
   .on(gamePrepared, (sessions, { session }) => ({ ...sessions, [session.gameId]: session }))
   .on(gameDeletionApplied, (sessions, { gameId }) => {
     const next = { ...sessions };
@@ -161,7 +208,10 @@ $sessions
     return next;
   })
   .on(persistedStateImported, (_, state) =>
-    Object.fromEntries(state.sessions.map((session) => [session.gameId, normalizeSession(session)])),
+    Object.fromEntries(state.sessions.map((session) => {
+      const game = state.games.find((item) => item.id === session.gameId);
+      return [session.gameId, game ? reconcileSession(game, session) : normalizeSession(session)];
+    })),
   );
 
 $activeGameId
@@ -173,7 +223,7 @@ $activeGameId
   )
   .on(persistedStateImported, (_, state) => state.activeGameId ?? state.games[0]?.id ?? null);
 
-sample({ clock: appStarted, target: loadFx });
+sample({ clock: [appStarted, storageRetryRequested], target: loadFx });
 
 sample({
   clock: gameCreated,
@@ -224,7 +274,12 @@ sample({
 sample({
   clock: questionOpened,
   source: combine({ game: $activeGame, sessions: $sessions }),
-  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]),
+  filter: ({ game, sessions }, questionId) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    const round = game.rounds[session?.roundIndex ?? -1];
+    return Boolean(session && round?.categories.some((category) => category.questions.some((question) => question.id === questionId)) && !session.completedQuestionIds.includes(questionId));
+  },
   fn: ({ game, sessions }, questionId) => {
     const session = sessions[game!.id];
     return {
@@ -276,6 +331,7 @@ sample({
     const session = sessions[game.id];
     return Boolean(
       session?.activeQuestionId &&
+        game.teams.some((team) => team.id === teamId) &&
         !session.answerRevealed &&
         !session.activeExcludedTeamIds.includes(teamId) &&
         !session.currentIncorrectTeamIds.includes(teamId) &&
@@ -305,7 +361,7 @@ sample({
   filter: ({ game, sessions }, teamId) => {
     if (!game) return false;
     const session = sessions[game.id];
-    return Boolean(session?.activeQuestionId && !session.answerRevealed && !session.activeExcludedTeamIds.includes(teamId));
+    return Boolean(session?.activeQuestionId && game.teams.some((team) => team.id === teamId) && !session.answerRevealed && !session.activeExcludedTeamIds.includes(teamId));
   },
   fn: ({ game, sessions }, teamId) => {
     const session = sessions[game!.id];
@@ -356,7 +412,9 @@ sample({
 sample({
   clock: teamScoreChanged,
   source: combine({ game: $activeGame, sessions: $sessions }),
-  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]),
+  filter: ({ game, sessions }, { teamId, score }) => Boolean(
+    game && sessions[game.id] && game.teams.some((team) => team.id === teamId) && Number.isSafeInteger(score),
+  ),
   fn: ({ game, sessions }, { teamId, score }) => {
     const session = sessions[game!.id];
     return { ...sessions, [game!.id]: { ...session, scores: { ...session.scores, [teamId]: score } } };
@@ -367,14 +425,14 @@ sample({
 sample({
   clock: nextRoundRequested,
   source: combine({ game: $activeGame, sessions: $sessions }),
-  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]),
+  filter: ({ game, sessions }) => Boolean(game && sessions[game.id] && sessions[game.id].roundIndex < game.rounds.length && isRoundComplete(game, sessions[game.id])),
   fn: ({ game, sessions }) => {
     const session = sessions[game!.id];
     return {
       ...sessions,
       [game!.id]: {
         ...session,
-        roundIndex: session.roundIndex + 1,
+        roundIndex: Math.min(session.roundIndex + 1, game!.rounds.length),
         activeQuestionId: null,
         awardedTeamId: null,
         answerRevealed: false,
@@ -391,7 +449,7 @@ const activeGameSource = combine({ game: $activeGame });
 sample({
   clock: gameTitleChanged,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, title) => Boolean(game && title.length <= DATA_LIMITS.text.gameTitle),
   fn: ({ game }, title) => touchGame({ ...game!, title }),
   target: gameConfigUpdated,
 });
@@ -415,7 +473,7 @@ sample({
 sample({
   clock: roundNameChanged,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, { name }) => Boolean(game && name.length <= DATA_LIMITS.text.roundName),
   fn: ({ game }, payload) => touchGame({
     ...game!,
     rounds: game!.rounds.map((round) => (round.id === payload.roundId ? { ...round, name: payload.name } : round)),
@@ -458,7 +516,7 @@ sample({
 sample({
   clock: categoryNameChanged,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, { name }) => Boolean(game && name.length <= DATA_LIMITS.text.categoryName),
   fn: ({ game }, payload) => touchGame({
     ...game!,
     rounds: game!.rounds.map((round) =>
@@ -518,15 +576,20 @@ sample({
 sample({
   clock: questionChanged,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, { roundId, categoryId, questionId, patch }) => {
+    if (!game || patch.points === undefined) return Boolean(game);
+    if (!Number.isSafeInteger(patch.points) || patch.points <= 0 || patch.points > DATA_LIMITS.maxQuestionPoints) return false;
+    const category = game.rounds.find((round) => round.id === roundId)?.categories.find((item) => item.id === categoryId);
+    return Boolean(category && !category.questions.some((question) => question.id !== questionId && question.points === patch.points));
+  },
   fn: ({ game }, payload) => touchGame(updateQuestion(game!, payload, (question) => ({ ...question, ...payload.patch }))),
   target: gameConfigUpdated,
 });
 
 sample({
   clock: questionSongChanged,
-  source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  source: combine({ game: $activeGame, songs: $songs }),
+  filter: ({ game, songs }, { songId }) => Boolean(game && (!songId || songs.some((song) => song.id === songId))),
   fn: ({ game }, payload) => touchGame(updateQuestion(game!, payload, (question) => ({ ...question, songId: payload.songId }))),
   target: gameConfigUpdated,
 });
@@ -553,7 +616,15 @@ sample({
 sample({
   clock: teamChanged,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, { teamId, patch }) => {
+    if (!game || (patch.name !== undefined && patch.name.length > DATA_LIMITS.text.teamName) || (patch.color !== undefined && !/^#[0-9a-f]{6}$/i.test(patch.color))) return false;
+    if (patch.name?.trim()) {
+      const normalized = patch.name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU');
+      if (game.teams.some((team) => team.id !== teamId && team.name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU') === normalized)) return false;
+    }
+    if (patch.color && game.teams.some((team) => team.id !== teamId && team.color.toLowerCase() === patch.color!.toLowerCase())) return false;
+    return true;
+  },
   fn: ({ game }, { teamId, patch }) => touchGame({
     ...game!,
     teams: game!.teams.map((team) => (team.id === teamId ? { ...team, ...patch } : team)),
@@ -574,7 +645,7 @@ sample({
 sample({
   clock: songAudioChanged,
   source: $songs,
-  filter: (songs, { songId }) => songs.some((song) => song.id === songId),
+  filter: (songs, { songId, asset }) => songs.some((song) => song.id === songId) && (!asset || (asset.id === asset.sha256 && isSha256(asset.id) && asset.verified === true && asset.blob instanceof Blob && asset.blob.size > 0)),
   fn: (songs, payload) => {
     const current = songs.find((song) => song.id === payload.songId)!;
     const previousAudioId = payload.kind === 'minus' ? current.minusAudioId : current.plusAudioId;
@@ -628,9 +699,15 @@ export const persistedStateImportFx = createEffect(async (state: PersistedState)
 
 sample({ clock: persistedStateImportFx.doneData, target: persistedStateImported });
 
-$storageError
-  .on(persistedStateImportFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось сохранить импортированные данные.'))
-  .on(persistedStateImportFx.done, () => null);
+$storageError.on(persistedStateImportFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось сохранить импортированные данные.'));
+$storageReadOnly.on(persistedStateImportFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly);
+
+sample({
+  clock: persistedStateImportFx.done,
+  source: $storageReadOnly,
+  filter: (readOnly) => !readOnly,
+  target: storageErrorCleared,
+});
 
 const scheduleSaveFx = createEffect((state: PersistedState) => {
   window.clearTimeout(saveTimer);
@@ -639,11 +716,31 @@ const scheduleSaveFx = createEffect((state: PersistedState) => {
 
 sample({
   clock: $persistedState.updates,
-  source: combine({ state: $persistedState, hydrated: $hydrated }),
-  filter: ({ hydrated }) => hydrated,
+  source: combine({ state: $persistedState, hydrated: $hydrated, readOnly: $storageReadOnly }),
+  filter: ({ hydrated, readOnly }) => hydrated && !readOnly,
   fn: ({ state }) => state,
   target: scheduleSaveFx,
 });
+
+if (typeof window !== 'undefined') {
+  subscribeToExternalStorageChanges((revision) => externalStorageChangeDetected(revision));
+}
+
+function flushPendingSave() {
+  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState()) return;
+  window.clearTimeout(saveTimer);
+  void saveFx($persistedState.getState());
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingSave();
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', flushPendingSave);
+}
 
 export const $activeRound = combine($activeGame, $session, (game, session) =>
   game && session ? game.rounds[session.roundIndex] ?? null : null,
@@ -662,12 +759,7 @@ export const $isGameFinished = combine($activeGame, $session, (game, session) =>
   Boolean(game && session && session.roundIndex >= game.rounds.length),
 );
 
-export const isRoundComplete = (config: GameConfig, session: GameSession) => {
-  const round = config.rounds[session.roundIndex];
-  if (!round) return true;
-  const ids = round.categories.flatMap((category) => category.questions.map((question) => question.id));
-  return ids.length > 0 && ids.every((id) => session.completedQuestionIds.includes(id));
-};
+export { isRoundComplete };
 
 export const resolveQuestion = (question: Question, songs: Song[], audioAssets: AudioAsset[]): PlayableQuestion => {
   const song = question.songId ? songs.find((item) => item.id === question.songId) : undefined;
@@ -693,67 +785,7 @@ export const getSongUsage = (games: GameConfig[], songId: string) =>
     return count > 0 ? [{ gameId: game.id, title: game.title, count }] : [];
   });
 
-export const getGameStartIssues = (config: GameConfig, songs: Song[], audioAssets: AudioAsset[]) => {
-  const issues: string[] = [];
-  const songById = new Map(songs.map((song) => [song.id, song]));
-  const audioById = new Map(audioAssets.map((asset) => [asset.id, asset]));
-
-  if (!config.title.trim()) issues.push('Не задано название игры.');
-  if (config.rounds.length === 0) issues.push('В игре нет раундов.');
-  if (config.teams.length === 0) issues.push('В игре нет команд.');
-  const teamNames = new Set<string>();
-  const teamColors = new Set<string>();
-  config.teams.forEach((team, teamIndex) => {
-    const name = team.name.trim();
-    if (!name) issues.push(`Команда ${teamIndex + 1}: не задано название.`);
-    const normalized = name.toLocaleLowerCase('ru-RU');
-    if (normalized && teamNames.has(normalized)) issues.push(`Команда ${teamIndex + 1}: название «${name}» уже используется.`);
-    if (normalized) teamNames.add(normalized);
-
-    const color = team.color.toLocaleLowerCase('en-US');
-    if (!/^#[0-9a-f]{6}$/.test(color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
-    else if (teamColors.has(color)) issues.push(`Команда ${teamIndex + 1}: этот цвет уже используется другой командой.`);
-    teamColors.add(color);
-  });
-
-  for (const [roundIndex, round] of config.rounds.entries()) {
-    if (!round.name.trim()) issues.push(`Раунд ${roundIndex + 1}: не задано название.`);
-    if (round.categories.length === 0) {
-      issues.push(`Раунд ${roundIndex + 1} не содержит категорий.`);
-      continue;
-    }
-    for (const [categoryIndex, category] of round.categories.entries()) {
-      if (!category.name.trim()) issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: не задано название.`);
-      if (category.questions.length === 0) {
-        issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: нет вопросов.`);
-        continue;
-      }
-      const usedPoints = new Set<number>();
-      for (const [questionIndex, question] of category.questions.entries()) {
-        const prefix = `Раунд ${roundIndex + 1}, «${category.name || `Категория ${categoryIndex + 1}`}», вопрос ${questionIndex + 1}`;
-        if (!Number.isFinite(question.points) || question.points <= 0) {
-          issues.push(`${prefix}: стоимость должна быть больше нуля.`);
-        } else if (usedPoints.has(question.points)) {
-          issues.push(`${prefix}: стоимость ${question.points} уже используется в этой категории.`);
-        }
-        if (Number.isFinite(question.points) && question.points > 0) usedPoints.add(question.points);
-        if (!question.songId) {
-          issues.push(`${prefix}: не выбрана песня.`);
-          continue;
-        }
-        const song = songById.get(question.songId);
-        if (!song) {
-          issues.push(`${prefix}: выбранная песня отсутствует в медиатеке.`);
-          continue;
-        }
-        if (!hasPlayableAudio(song.minusAudioId, audioById)) issues.push(`${prefix}: отсутствует или повреждён минус.`);
-        if (!hasPlayableAudio(song.plusAudioId, audioById)) issues.push(`${prefix}: отсутствует или повреждён плюс.`);
-      }
-    }
-  }
-
-  return issues;
-};
+export { getGameStartIssues, getSessionContinuationIssues };
 
 export const hasSessionProgress = (session?: GameSession | null) =>
   Boolean(
@@ -764,15 +796,7 @@ export const hasSessionProgress = (session?: GameSession | null) =>
         session.roundIndex > 0),
   );
 
-function findQuestion(config: GameConfig, questionId: string) {
-  for (const round of config.rounds) {
-    for (const category of round.categories) {
-      const question = category.questions.find((item) => item.id === questionId);
-      if (question) return question;
-    }
-  }
-  return undefined;
-}
+
 
 function updateQuestion(
   state: GameConfig,
@@ -804,46 +828,7 @@ function updateQuestionCollection(
   };
 }
 
-function normalizeSession(session: GameSession): GameSession {
-  const activeExcludedTeamIds = Array.isArray(session.activeExcludedTeamIds) ? session.activeExcludedTeamIds : [];
-  const nextExcludedTeamIds = Array.isArray(session.nextExcludedTeamIds) ? session.nextExcludedTeamIds : [];
-  const answerRevealed = session.answerRevealed ?? Boolean(session.awardedTeamId);
-  const inferredCurrentIncorrectTeamIds = session.activeQuestionId && !answerRevealed
-    ? nextExcludedTeamIds.filter((id) => !activeExcludedTeamIds.includes(id))
-    : [];
 
-  return {
-    ...session,
-    answerRevealed,
-    activeExcludedTeamIds,
-    currentIncorrectTeamIds: Array.isArray(session.currentIncorrectTeamIds)
-      ? session.currentIncorrectTeamIds
-      : inferredCurrentIncorrectTeamIds,
-    nextExcludedTeamIds,
-  };
-}
-
-function reconcileSession(config: GameConfig, rawSession: GameSession): GameSession {
-  const session = normalizeSession(rawSession);
-  const teamIds = new Set(config.teams.map((team) => team.id));
-  const scores = Object.fromEntries(config.teams.map((team) => [team.id, session.scores[team.id] ?? 0]));
-  const questionIds = new Set(
-    config.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions.map((question) => question.id))),
-  );
-
-  return {
-    ...session,
-    gameId: config.id,
-    roundIndex: Math.min(session.roundIndex, config.rounds.length),
-    activeQuestionId: session.activeQuestionId && questionIds.has(session.activeQuestionId) ? session.activeQuestionId : null,
-    completedQuestionIds: session.completedQuestionIds.filter((id) => questionIds.has(id)),
-    scores,
-    awardedTeamId: session.awardedTeamId && teamIds.has(session.awardedTeamId) ? session.awardedTeamId : null,
-    activeExcludedTeamIds: session.activeExcludedTeamIds.filter((id) => teamIds.has(id)),
-    currentIncorrectTeamIds: session.currentIncorrectTeamIds.filter((id) => teamIds.has(id)),
-    nextExcludedTeamIds: session.nextExcludedTeamIds.filter((id) => teamIds.has(id)),
-  };
-}
 
 function touchGame(game: GameConfig): GameConfig {
   return { ...game, updatedAt: Date.now() };
@@ -851,12 +836,6 @@ function touchGame(game: GameConfig): GameConfig {
 
 function unique(values: string[]) {
   return [...new Set(values)];
-}
-
-function hasPlayableAudio(audioId: string | undefined, audioById: Map<string, AudioAsset>) {
-  if (!audioId) return false;
-  const asset = audioById.get(audioId);
-  return Boolean(asset && asset.blob instanceof Blob && asset.blob.size > 0 && asset.size > 0);
 }
 
 function storageErrorMessage(error: unknown, fallback: string) {

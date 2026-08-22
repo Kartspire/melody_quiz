@@ -12,6 +12,7 @@ import {
   gameDuplicated,
   gameRestarted,
   getGameStartIssues,
+  getSessionContinuationIssues,
   hasSessionProgress,
   persistedStateImportFx,
   screenChanged,
@@ -23,9 +24,11 @@ import {
   parseMelodyPackage,
   prepareGameImport,
   type GameConflictMode,
+  type ParsedMelodyPackage,
   type PreparedGameImport,
 } from '../lib/melodyPackage';
 import type { GameConfig } from '../model/types';
+import { DATA_LIMITS } from '../model/limits';
 import { ActionMenu } from './ActionMenu';
 import { useEscapeClose } from './useEscapeClose';
 
@@ -40,7 +43,7 @@ export function GameLibrary() {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('Новая игра');
   const [busy, setBusy] = useState<string | null>(null);
-  const [pendingImport, setPendingImport] = useState<PreparedGameImport | null>(null);
+  const [pendingImport, setPendingImport] = useState<{ packageData: ParsedMelodyPackage; preview: PreparedGameImport } | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const sortedGames = useMemo(() => [...games].sort((a, b) => b.updatedAt - a.updatedAt), [games]);
@@ -50,7 +53,9 @@ export function GameLibrary() {
     if (screen === 'game' && game) {
       const session = sessions[gameId];
       const finished = Boolean(session && session.roundIndex >= game.rounds.length);
-      const issues = finished ? [] : getGameStartIssues(game, songs, audioAssets);
+      const issues = finished ? [] : hasSessionProgress(session)
+        ? getSessionContinuationIssues(game, session, songs, audioAssets)
+        : getGameStartIssues(game, songs, audioAssets);
       if (issues.length > 0) {
         window.alert(formatGameIssues(issues));
         activeGameChanged(gameId);
@@ -96,8 +101,8 @@ export function GameLibrary() {
       setBusy('import');
       const packageData = await parseMelodyPackage(file);
       if (packageData.manifest.type !== 'melody-game') throw new Error('Это архив медиатеки. Для него используйте импорт на экране «Медиатека».');
-      const prepared = await prepareGameImport(packageData, persistedState);
-      setPendingImport(prepared);
+      const preview = await prepareGameImport(packageData, persistedState);
+      setPendingImport({ packageData, preview });
     } catch (error) {
       window.alert(errorMessage(error, 'Не удалось прочитать архив игры.'));
     } finally {
@@ -110,7 +115,8 @@ export function GameLibrary() {
     if (!pendingImport) return;
     try {
       setBusy('import');
-      const nextState = finalizeGameImport(pendingImport, persistedState, mode);
+      const latestPrepared = await prepareGameImport(pendingImport.packageData, persistedState);
+      const nextState = finalizeGameImport(latestPrepared, persistedState, mode);
       await persistedStateImportFx(nextState);
       setPendingImport(null);
       screenChanged('library');
@@ -154,6 +160,7 @@ export function GameLibrary() {
             <span>Название новой игры</span>
             <input
               autoFocus
+              maxLength={DATA_LIMITS.text.gameTitle}
               value={title}
               onFocus={(event) => event.currentTarget.select()}
               onChange={(event) => setTitle(event.target.value)}
@@ -254,7 +261,7 @@ export function GameLibrary() {
 
       {pendingImport && (
         <GameImportDialog
-          prepared={pendingImport}
+          prepared={pendingImport.preview}
           onCancel={() => setPendingImport(null)}
           onImport={(mode) => void applyImport(mode)}
         />
@@ -286,17 +293,18 @@ function GameImportDialog({
 
         <ImportVerificationSummary
           title={`Игра «${game.title}» готова к импорту`}
-          songsTotal={stats.newSongs + stats.reusedSongs}
-          songsNew={stats.newSongs}
-          songsReused={stats.reusedSongs}
-          audioTotal={stats.newAudio + stats.reusedAudio}
-          audioNew={stats.newAudio}
-          audioReused={stats.reusedAudio}
+          stats={stats}
         />
 
         <p className="import-note">
           Прогресс партии не переносится: после импорта игра начнётся с нулевыми баллами и всеми неразыгранными карточками.
         </p>
+        {prepared.playabilityIssues.length > 0 && (
+          <p className="import-note import-note--warning">
+            Архив целостен, но игра требует настройки перед запуском: {prepared.playabilityIssues[0]}
+            {prepared.playabilityIssues.length > 1 ? ` Ещё замечаний: ${prepared.playabilityIssues.length - 1}.` : ''}
+          </p>
+        )}
 
         {prepared.hasGameConflict ? (
           <div className="import-conflict">
@@ -321,22 +329,24 @@ function GameImportDialog({
 
 function ImportVerificationSummary({
   title,
-  songsTotal,
-  songsNew,
-  songsReused,
-  audioTotal,
-  audioNew,
-  audioReused,
+  stats,
 }: {
   title: string;
-  songsTotal: number;
-  songsNew: number;
-  songsReused: number;
-  audioTotal: number;
-  audioNew: number;
-  audioReused: number;
+  stats: PreparedGameImport['media']['stats'];
 }) {
-  const nothingNew = songsNew === 0 && audioNew === 0;
+  const songsTotal = stats.newSongs + stats.reusedSongs + stats.deduplicatedSongs;
+  const audioTotal = stats.newAudio + stats.reusedAudio;
+  const nothingNew = stats.newSongs === 0 && stats.newAudio === 0;
+  const songDetails = [
+    `${stats.reusedSongs} уже в медиатеке`,
+    `будет добавлено: ${stats.newSongs}`,
+    stats.deduplicatedSongs > 0 ? `${stats.deduplicatedSongs} совпали внутри архива` : '',
+  ].filter(Boolean).join(' · ');
+  const audioDetails = [
+    `${stats.reusedAudio} уже в медиатеке`,
+    `будет добавлено: ${stats.newAudio}`,
+    stats.internalAudioReuses > 0 ? `${stats.internalAudioReuses} повторных ссылок внутри архива` : '',
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="import-verification">
@@ -355,16 +365,8 @@ function ImportVerificationSummary({
       <div className="import-verification__content">
         <strong className="import-section-title">Что будет импортировано</strong>
         <div className="import-summary-grid">
-          <ImportSummaryCard
-            label="Песни"
-            total={songsTotal}
-            details={`${songsReused} уже есть · будет добавлено: ${songsNew}`}
-          />
-          <ImportSummaryCard
-            label="Аудиофайлы"
-            total={audioTotal}
-            details={`${audioReused} уже есть · будет добавлено: ${audioNew}`}
-          />
+          <ImportSummaryCard label="Песни" total={songsTotal} details={songDetails} />
+          <ImportSummaryCard label="Аудиофайлы" total={audioTotal} details={audioDetails} />
         </div>
         <p className="import-dedup-note">
           {nothingNew
@@ -387,7 +389,13 @@ function ImportSummaryCard({ label, total, details }: { label: string; total: nu
 }
 
 function formatDate(timestamp: number) {
-  return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(timestamp);
+  const date = new Date(timestamp);
+  if (!Number.isFinite(timestamp) || Number.isNaN(date.getTime())) return 'неизвестно';
+  try {
+    return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
+  } catch {
+    return 'неизвестно';
+  }
 }
 
 function formatGameIssues(issues: string[]) {

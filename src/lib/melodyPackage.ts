@@ -1,44 +1,17 @@
 import { createId } from './ids';
-import { crc32 } from './zipStore';
+import { crc32Blob, digestBlobWithCrc } from './contentHash';
 import { createStoredZip, readStoredZip } from './zipStore';
 import { createSession } from '../model/defaults';
-import { GAME_LIMITS } from '../model/limits';
+import { DATA_LIMITS } from '../model/limits';
+import { assertValidGameStructure, getGameStartIssues, isSha256 } from '../model/validation';
 import type { AudioAsset, GameConfig, PersistedState, Song } from '../model/types';
+import { MELODY_PACKAGE_FORMAT_VERSION, migrateManifest, validateManifest, validatePackageSongMetadata, validatePackageSongs } from './melodyPackageSchema';
+import type { MelodyPackageKind, MelodyPackageManifest, PackageAudioRef, PackageSong } from './melodyPackageSchema';
 
-export const MELODY_PACKAGE_FORMAT_VERSION = 1;
-export const MELODY_APP_VERSION = '1.3.4';
+export { MELODY_PACKAGE_FORMAT_VERSION } from './melodyPackageSchema';
+export type { MelodyPackageKind, MelodyPackageManifest, PackageAudioRef, PackageSong } from './melodyPackageSchema';
 
-export type MelodyPackageKind = 'melody-game' | 'melody-library';
-
-export type PackageAudioRef = {
-  path: string;
-  name: string;
-  type: string;
-  size: number;
-  sha256: string;
-};
-
-export type PackageSong = Omit<Song, 'minusAudioId' | 'plusAudioId'> & {
-  minus?: PackageAudioRef;
-  plus?: PackageAudioRef;
-};
-
-export type PackageManifestFile = {
-  path: string;
-  size: number;
-  sha256: string;
-  mediaType: string;
-};
-
-export type MelodyPackageManifest = {
-  type: MelodyPackageKind;
-  formatVersion: number;
-  appVersion: string;
-  exportedAt: string;
-  gameId?: string;
-  gameName?: string;
-  files: PackageManifestFile[];
-};
+export const MELODY_APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 export type ParsedMelodyPackage = {
   manifest: MelodyPackageManifest;
@@ -50,8 +23,10 @@ export type ParsedMelodyPackage = {
 export type ImportStats = {
   newSongs: number;
   reusedSongs: number;
+  deduplicatedSongs: number;
   newAudio: number;
   reusedAudio: number;
+  internalAudioReuses: number;
 };
 
 export type PreparedMediaMerge = {
@@ -67,9 +42,8 @@ export type PreparedGameImport = {
   package: ParsedMelodyPackage;
   media: PreparedMediaMerge;
   hasGameConflict: boolean;
+  playabilityIssues: string[];
 };
-
-type Digests = { sha256: string; crc32: number };
 
 type ExportEntry = {
   path: string;
@@ -79,12 +53,12 @@ type ExportEntry = {
   crc32: number;
 };
 
-
 export async function exportGamePackage(
   game: GameConfig,
   songs: Song[],
   audioAssets: AudioAsset[],
 ): Promise<{ blob: Blob; filename: string }> {
+  assertValidGameStructure(game);
   const usedSongIds = new Set(
     game.rounds.flatMap((round) =>
       round.categories.flatMap((category) =>
@@ -93,19 +67,20 @@ export async function exportGamePackage(
     ),
   );
   const packageSongs = songs.filter((song) => usedSongIds.has(song.id));
-  const missingSongIds = [...usedSongIds].filter((songId) => !packageSongs.some((song) => song.id === songId));
+  const packageSongIds = new Set(packageSongs.map((song) => song.id));
+  const missingSongIds = [...usedSongIds].filter((songId) => !packageSongIds.has(songId));
   if (missingSongIds.length > 0) throw new Error('Игра содержит ссылки на отсутствующие песни. Откройте редактор и назначьте песни заново.');
-  const { serializedSongs, audioEntries } = await serializeSongs(packageSongs, audioAssets);
 
+  const { serializedSongs, audioEntries } = await serializeSongs(packageSongs, audioAssets);
   const gameEntry = await jsonEntry('game.json', game);
   const songsEntry = await jsonEntry('songs.json', serializedSongs);
   const contentEntries = [gameEntry, songsEntry, ...audioEntries];
   const manifest = buildManifest('melody-game', contentEntries, game);
   const manifestEntry = await jsonEntry('manifest.json', manifest);
+  assertExportBounds([manifestEntry, ...contentEntries]);
   const blob = await createStoredZip(
     [manifestEntry, ...contentEntries].map((entry) => ({ name: entry.path, data: entry.blob, crc32: entry.crc32 })),
   );
-
   return { blob, filename: `${safeFilename(game.title || 'game')}.melody` };
 }
 
@@ -118,6 +93,7 @@ export async function exportLibraryPackage(
   const contentEntries = [songsEntry, ...audioEntries];
   const manifest = buildManifest('melody-library', contentEntries);
   const manifestEntry = await jsonEntry('manifest.json', manifest);
+  assertExportBounds([manifestEntry, ...contentEntries]);
   const blob = await createStoredZip(
     [manifestEntry, ...contentEntries].map((entry) => ({ name: entry.path, data: entry.blob, crc32: entry.crc32 })),
   );
@@ -127,42 +103,57 @@ export async function exportLibraryPackage(
 }
 
 export async function parseMelodyPackage(file: Blob): Promise<ParsedMelodyPackage> {
+  if (!(file instanceof Blob) || file.size <= 0) throw new Error('Выбран пустой файл.');
+  if (file.size > DATA_LIMITS.packageBytes) throw new Error('Архив превышает максимальный поддерживаемый размер 4 ГБ.');
+
   const zipEntries = await readStoredZip(file);
+  if (zipEntries.size > DATA_LIMITS.packageFiles + 1) throw new Error('В архиве слишком много файлов.');
   const manifestEntry = zipEntries.get('manifest.json');
   if (!manifestEntry) throw new Error('В архиве отсутствует manifest.json.');
-  if (manifestEntry.size > 2 * 1024 * 1024) throw new Error('manifest.json имеет недопустимый размер.');
+  if (manifestEntry.size > DATA_LIMITS.manifestBytes) throw new Error('manifest.json имеет недопустимый размер.');
+  if (await crc32Blob(manifestEntry.blob) !== manifestEntry.crc32) throw new Error('CRC manifest.json не совпадает. Архив повреждён.');
 
-  const manifest = parseJson<MelodyPackageManifest>(await manifestEntry.blob.text(), 'manifest.json');
+  const rawManifest = parseJson<MelodyPackageManifest>(await manifestEntry.blob.text(), 'manifest.json');
+  const manifest = migrateManifest(rawManifest);
   validateManifest(manifest);
+
+  const allowedPaths = new Set(['manifest.json', ...manifest.files.map((descriptor) => descriptor.path)]);
+  for (const path of zipEntries.keys()) {
+    if (!allowedPaths.has(path)) throw new Error(`Архив содержит незаявленный файл «${path}».`);
+  }
 
   const entries = new Map<string, Blob>();
   for (const descriptor of manifest.files) {
     const entry = zipEntries.get(descriptor.path);
     if (!entry) throw new Error(`В архиве отсутствует файл «${descriptor.path}».`);
     if (entry.size !== descriptor.size) throw new Error(`Размер файла «${descriptor.path}» не совпадает с manifest.`);
-    const digests = await digestBlob(entry.blob);
-    if (digests.sha256 !== descriptor.sha256) throw new Error(`Контрольная сумма «${descriptor.path}» не совпадает. Архив повреждён.`);
+    const digests = await digestBlobWithCrc(entry.blob);
+    if (digests.sha256 !== descriptor.sha256.toLowerCase()) throw new Error(`Контрольная сумма «${descriptor.path}» не совпадает. Архив повреждён.`);
     if (digests.crc32 !== entry.crc32) throw new Error(`CRC файла «${descriptor.path}» не совпадает. Архив повреждён.`);
     entries.set(descriptor.path, entry.blob);
   }
 
   const songsBlob = entries.get('songs.json');
   if (!songsBlob) throw new Error('В архиве отсутствует songs.json.');
+  if (songsBlob.size > DATA_LIMITS.songsJsonBytes) throw new Error('songs.json имеет недопустимый размер.');
   const songs = parseJson<PackageSong[]>(await songsBlob.text(), 'songs.json');
-  validatePackageSongs(songs, entries, manifest.files);
+  await validatePackageSongs(songs, entries, manifest.files);
 
   let game: GameConfig | undefined;
   if (manifest.type === 'melody-game') {
     const gameBlob = entries.get('game.json');
     if (!gameBlob) throw new Error('В архиве игры отсутствует game.json.');
+    if (gameBlob.size > DATA_LIMITS.gameJsonBytes) throw new Error('game.json имеет недопустимый размер.');
     game = parseJson<GameConfig>(await gameBlob.text(), 'game.json');
-    validateGame(game);
+    assertValidGameStructure(game);
     const packageSongIds = new Set(songs.map((song) => song.id));
     const missingSongReference = game.rounds
       .flatMap((round) => round.categories.flatMap((category) => category.questions))
       .find((question) => question.songId && !packageSongIds.has(question.songId));
     if (missingSongReference?.songId) throw new Error(`В game.json есть ссылка на отсутствующую песню «${missingSongReference.songId}».`);
     if (manifest.gameId && manifest.gameId !== game.id) throw new Error('gameId в manifest не совпадает с game.json.');
+  } else if (entries.has('game.json')) {
+    throw new Error('Архив медиатеки не должен содержать game.json.');
   }
 
   return { manifest, game, songs, entries };
@@ -173,60 +164,70 @@ export async function prepareMediaMerge(
   currentSongs: Song[],
   currentAudioAssets: AudioAsset[],
 ): Promise<PreparedMediaMerge> {
-  const audioAssets = await enrichAudioHashes(currentAudioAssets);
   const hashToAudioId = new Map<string, string>();
   const audioHashById = new Map<string, string>();
-  for (const asset of audioAssets) {
-    if (!asset.sha256) continue;
-    if (!hashToAudioId.has(asset.sha256)) hashToAudioId.set(asset.sha256, asset.id);
+  for (const asset of currentAudioAssets) {
+    if (!isSha256(asset.id) || asset.sha256 !== asset.id || asset.verified !== true) {
+      throw new Error('Локальная медиатека содержит аудио старого формата. Перезагрузите приложение, чтобы завершить миграцию.');
+    }
+    hashToAudioId.set(asset.sha256, asset.id);
     audioHashById.set(asset.id, asset.sha256);
   }
 
+  const initialAudioHashes = new Set(hashToAudioId.keys());
   const songByFingerprint = new Map<string, Song>();
-  for (const song of currentSongs) songByFingerprint.set(songFingerprint(song, audioHashById), song);
+  const initialSongFingerprints = new Set<string>();
+  for (const song of currentSongs) {
+    const fingerprint = songFingerprint(song, audioHashById);
+    if (!songByFingerprint.has(fingerprint)) songByFingerprint.set(fingerprint, song);
+    initialSongFingerprints.add(fingerprint);
+  }
 
   const mergedSongs = [...currentSongs];
-  const mergedAudioAssets = [...audioAssets];
+  const mergedAudioAssets = [...currentAudioAssets];
   const songIdMap = new Map<string, string>();
+  const usedExistingAudioHashes = new Set<string>();
   const newAudioHashes = new Set<string>();
-  const reusedAudioHashes = new Set<string>();
+  let internalAudioReuses = 0;
   let newSongs = 0;
   let reusedSongs = 0;
+  let deduplicatedSongs = 0;
 
   for (const packageSong of packageData.songs) {
     const importedFingerprint = packageSongFingerprint(packageSong);
     const existingSong = songByFingerprint.get(importedFingerprint);
     if (existingSong) {
       songIdMap.set(packageSong.id, existingSong.id);
-      reusedSongs += 1;
+      if (initialSongFingerprints.has(importedFingerprint)) reusedSongs += 1;
+      else deduplicatedSongs += 1;
       for (const audioRef of [packageSong.minus, packageSong.plus]) {
-        if (audioRef) reusedAudioHashes.add(audioRef.sha256);
+        if (!audioRef) continue;
+        if (initialAudioHashes.has(audioRef.sha256)) usedExistingAudioHashes.add(audioRef.sha256);
+        else if (newAudioHashes.has(audioRef.sha256)) internalAudioReuses += 1;
       }
       continue;
     }
 
     const minusAudioId = packageSong.minus
-      ? materializeAudioRef(packageSong.minus, packageData.entries, mergedAudioAssets, hashToAudioId, newAudioHashes, reusedAudioHashes)
+      ? materializeAudioRef(packageSong.minus, packageData.entries, mergedAudioAssets, hashToAudioId, initialAudioHashes, usedExistingAudioHashes, newAudioHashes, () => { internalAudioReuses += 1; })
       : undefined;
     const plusAudioId = packageSong.plus
-      ? materializeAudioRef(packageSong.plus, packageData.entries, mergedAudioAssets, hashToAudioId, newAudioHashes, reusedAudioHashes)
+      ? materializeAudioRef(packageSong.plus, packageData.entries, mergedAudioAssets, hashToAudioId, initialAudioHashes, usedExistingAudioHashes, newAudioHashes, () => { internalAudioReuses += 1; })
       : undefined;
 
     const song: Song = {
       id: createId('song'),
-      artist: packageSong.artist,
-      title: packageSong.title,
+      artist: packageSong.artist.trim(),
+      title: packageSong.title.trim(),
       minusAudioId,
       plusAudioId,
-      createdAt: packageSong.createdAt || Date.now(),
-      updatedAt: packageSong.updatedAt || Date.now(),
+      createdAt: packageSong.createdAt,
+      updatedAt: packageSong.updatedAt,
     };
     mergedSongs.push(song);
     songIdMap.set(packageSong.id, song.id);
     newSongs += 1;
-    const minusHash = packageSong.minus?.sha256 ?? '';
-    const plusHash = packageSong.plus?.sha256 ?? '';
-    songByFingerprint.set(fingerprintParts(song.artist, song.title, minusHash, plusHash), song);
+    songByFingerprint.set(fingerprintParts(song.artist, song.title, packageSong.minus?.sha256 ?? '', packageSong.plus?.sha256 ?? ''), song);
   }
 
   return {
@@ -236,8 +237,10 @@ export async function prepareMediaMerge(
     stats: {
       newSongs,
       reusedSongs,
+      deduplicatedSongs,
       newAudio: newAudioHashes.size,
-      reusedAudio: reusedAudioHashes.size,
+      reusedAudio: usedExistingAudioHashes.size,
+      internalAudioReuses,
     },
   };
 }
@@ -248,10 +251,12 @@ export async function prepareGameImport(
 ): Promise<PreparedGameImport> {
   if (packageData.manifest.type !== 'melody-game' || !packageData.game) throw new Error('Выбранный архив не является экспортом игры.');
   const media = await prepareMediaMerge(packageData, state.songs, state.audioAssets);
+  const remappedGame = remapGameSongs(packageData.game, media.songIdMap, packageData.game.id);
   return {
     package: packageData,
     media,
     hasGameConflict: state.games.some((game) => game.id === packageData.game!.id),
+    playabilityIssues: getGameStartIssues(remappedGame, media.songs, media.audioAssets),
   };
 }
 
@@ -266,23 +271,10 @@ export function finalizeGameImport(
   const hasConflict = state.games.some((game) => game.id === sourceGame.id);
   const importedGameId = hasConflict && conflictMode === 'copy' ? createId('game') : sourceGame.id;
   const now = Date.now();
-  const importedGame: GameConfig = {
-    ...sourceGame,
-    id: importedGameId,
-    title: hasConflict && conflictMode === 'copy' ? uniqueCopyTitle(sourceGame.title, state.games) : sourceGame.title,
-    createdAt: hasConflict && conflictMode === 'copy' ? now : sourceGame.createdAt,
-    updatedAt: now,
-    rounds: sourceGame.rounds.map((round) => ({
-      ...round,
-      categories: round.categories.map((category) => ({
-        ...category,
-        questions: category.questions.map((question) => ({
-          ...question,
-          songId: question.songId ? prepared.media.songIdMap.get(question.songId) : undefined,
-        })),
-      })),
-    })),
-  };
+  const importedGame = remapGameSongs(sourceGame, prepared.media.songIdMap, importedGameId);
+  importedGame.title = hasConflict && conflictMode === 'copy' ? uniqueCopyTitle(sourceGame.title, state.games) : sourceGame.title;
+  importedGame.createdAt = hasConflict && conflictMode === 'copy' ? now : sourceGame.createdAt;
+  importedGame.updatedAt = now;
 
   const games = hasConflict && conflictMode === 'replace'
     ? state.games.map((game) => (game.id === sourceGame.id ? importedGame : game))
@@ -301,11 +293,7 @@ export function finalizeGameImport(
 }
 
 export function finalizeLibraryImport(preparedMedia: PreparedMediaMerge, state: PersistedState): PersistedState {
-  return {
-    ...state,
-    songs: preparedMedia.songs,
-    audioAssets: preparedMedia.audioAssets,
-  };
+  return { ...state, songs: preparedMedia.songs, audioAssets: preparedMedia.audioAssets };
 }
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -321,11 +309,16 @@ export function downloadBlob(blob: Blob, filename: string) {
 }
 
 async function serializeSongs(songs: Song[], audioAssets: AudioAsset[]) {
+  if (!Array.isArray(songs) || songs.length > DATA_LIMITS.packageSongs) throw new Error('Слишком много песен для одного архива.');
+  const songIds = new Set<string>();
   const assetById = new Map(audioAssets.map((asset) => [asset.id, asset]));
   const audioEntriesByHash = new Map<string, ExportEntry>();
   const serializedSongs: PackageSong[] = [];
 
   for (const song of songs) {
+    validatePackageSongMetadata(song);
+    if (songIds.has(song.id)) throw new Error(`Песня с id «${song.id}» повторяется в медиатеке.`);
+    songIds.add(song.id);
     if (song.minusAudioId && !assetById.has(song.minusAudioId)) throw new Error(`У песни «${song.artist} — ${song.title}» отсутствует файл минуса.`);
     if (song.plusAudioId && !assetById.has(song.plusAudioId)) throw new Error(`У песни «${song.artist} — ${song.title}» отсутствует файл плюса.`);
     const minus = song.minusAudioId ? await serializeAudio(assetById.get(song.minusAudioId), audioEntriesByHash) : undefined;
@@ -340,17 +333,20 @@ async function serializeSongs(songs: Song[], audioAssets: AudioAsset[]) {
       plus,
     });
   }
-
   return { serializedSongs, audioEntries: [...audioEntriesByHash.values()] };
 }
 
 async function serializeAudio(asset: AudioAsset | undefined, entries: Map<string, ExportEntry>): Promise<PackageAudioRef | undefined> {
   if (!asset) return undefined;
-  const digests = asset.sha256 ? { sha256: asset.sha256, crc32: await crc32BlobFast(asset.blob) } : await digestBlob(asset.blob);
-  const existing = entries.get(digests.sha256);
-  const path = existing?.path ?? `audio/${digests.sha256}${fileExtension(asset.name, asset.type)}`;
-  if (!existing) entries.set(digests.sha256, { path, blob: asset.blob, type: asset.type || 'application/octet-stream', ...digests });
-  return { path, name: asset.name, type: asset.type, size: asset.size, sha256: digests.sha256 };
+  if (!isSha256(asset.id) || asset.sha256 !== asset.id || asset.verified !== true) throw new Error(`Аудиофайл «${asset.name}» имеет некорректный идентификатор.`);
+  const existing = entries.get(asset.sha256);
+  if (existing) return { path: existing.path, name: asset.name, type: asset.type, size: asset.blob.size, sha256: asset.sha256 };
+
+  const digests = await digestBlobWithCrc(asset.blob);
+  if (digests.sha256 !== asset.sha256) throw new Error(`Аудиофайл «${asset.name}» изменился после сохранения. Загрузите файл заново.`);
+  const path = `audio/${asset.sha256}${fileExtension(asset.name, asset.type)}`;
+  entries.set(asset.sha256, { path, blob: asset.blob, type: asset.type || 'application/octet-stream', ...digests });
+  return { path, name: asset.name, type: asset.type, size: asset.blob.size, sha256: asset.sha256 };
 }
 
 function materializeAudioRef(
@@ -358,41 +354,31 @@ function materializeAudioRef(
   entries: Map<string, Blob>,
   audioAssets: AudioAsset[],
   hashToAudioId: Map<string, string>,
-  newAudioHashes: Set<string>,
+  initialAudioHashes: Set<string>,
   reusedAudioHashes: Set<string>,
+  newAudioHashes: Set<string>,
+  onInternalReuse: () => void,
 ) {
   const existingId = hashToAudioId.get(ref.sha256);
   if (existingId) {
-    if (!newAudioHashes.has(ref.sha256)) reusedAudioHashes.add(ref.sha256);
+    if (initialAudioHashes.has(ref.sha256)) reusedAudioHashes.add(ref.sha256);
+    else onInternalReuse();
     return existingId;
   }
   const source = entries.get(ref.path);
   if (!source) throw new Error(`Не найден аудиофайл «${ref.path}».`);
   const asset: AudioAsset = {
-    id: createId('audio'),
+    id: ref.sha256,
     name: ref.name,
     type: ref.type,
-    size: ref.size,
-    blob: new Blob([source], { type: ref.type || 'application/octet-stream' }),
+    blob: source,
     sha256: ref.sha256,
+    verified: true,
   };
   audioAssets.push(asset);
   hashToAudioId.set(ref.sha256, asset.id);
   newAudioHashes.add(ref.sha256);
-  reusedAudioHashes.delete(ref.sha256);
   return asset.id;
-}
-
-async function enrichAudioHashes(assets: AudioAsset[]) {
-  const result: AudioAsset[] = [];
-  for (const asset of assets) {
-    if (asset.sha256) {
-      result.push(asset);
-      continue;
-    }
-    result.push({ ...asset, sha256: (await digestBlob(asset.blob)).sha256 });
-  }
-  return result;
 }
 
 function buildManifest(kind: MelodyPackageKind, entries: ExportEntry[], game?: GameConfig): MelodyPackageManifest {
@@ -408,18 +394,19 @@ function buildManifest(kind: MelodyPackageKind, entries: ExportEntry[], game?: G
 
 async function jsonEntry(path: string, value: unknown): Promise<ExportEntry> {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
-  return { path, blob, type: 'application/json', ...(await digestBlob(blob)) };
+  return { path, blob, type: 'application/json', ...(await digestBlobWithCrc(blob)) };
 }
 
-async function digestBlob(blob: Blob): Promise<Digests> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-  return { sha256, crc32: crc32(bytes) };
-}
 
-async function crc32BlobFast(blob: Blob) {
-  return crc32(new Uint8Array(await blob.arrayBuffer()));
+function assertExportBounds(entries: ExportEntry[]) {
+  if (entries.length > DATA_LIMITS.packageFiles + 1) throw new Error('Слишком много файлов для одного архива.');
+  let totalSize = 0;
+  for (const entry of entries) {
+    totalSize += entry.blob.size;
+    if (!Number.isSafeInteger(totalSize) || totalSize > DATA_LIMITS.packageBytes) {
+      throw new Error('Суммарный размер архива превышает допустимый лимит 4 ГБ.');
+    }
+  }
 }
 
 function parseJson<T>(value: string, name: string): T {
@@ -430,79 +417,22 @@ function parseJson<T>(value: string, name: string): T {
   }
 }
 
-function validateManifest(value: MelodyPackageManifest) {
-  if (!value || (value.type !== 'melody-game' && value.type !== 'melody-library')) throw new Error('Неизвестный тип Melody-архива.');
-  if (value.formatVersion !== MELODY_PACKAGE_FORMAT_VERSION) {
-    throw new Error(`Версия формата ${value.formatVersion} не поддерживается этой версией приложения.`);
-  }
-  if (typeof value.appVersion !== 'string' || typeof value.exportedAt !== 'string' || !Number.isFinite(Date.parse(value.exportedAt))) throw new Error('Некорректные метаданные manifest.');
-  if (!Array.isArray(value.files) || value.files.length > 20_000) throw new Error('Некорректный список файлов в manifest.');
-  const paths = new Set<string>();
-  for (const file of value.files) {
-    if (!file?.path || !Number.isFinite(file.size) || file.size < 0 || !/^[a-f0-9]{64}$/i.test(file.sha256)) throw new Error('Некорректная запись файла в manifest.');
-    if (file.path.startsWith('/') || file.path.includes('..') || file.path.includes('\\')) throw new Error(`Недопустимый путь «${file.path}» в manifest.`);
-    if (paths.has(file.path)) throw new Error(`Файл «${file.path}» повторяется в manifest.`);
-    paths.add(file.path);
-  }
-}
 
-function validatePackageSongs(songs: PackageSong[], entries: Map<string, Blob>, manifestFiles: PackageManifestFile[]) {
-  const manifestByPath = new Map(manifestFiles.map((file) => [file.path, file]));
-  if (!Array.isArray(songs) || songs.length > 10_000) throw new Error('Некорректный список песен.');
-  const songIds = new Set<string>();
-  for (const song of songs) {
-    if (!song?.id || typeof song.artist !== 'string' || typeof song.title !== 'string' || !Number.isFinite(song.createdAt) || !Number.isFinite(song.updatedAt)) throw new Error('Некорректная запись песни.');
-    if (songIds.has(song.id)) throw new Error(`Песня с id «${song.id}» повторяется в архиве.`);
-    songIds.add(song.id);
-    for (const ref of [song.minus, song.plus]) {
-      if (!ref) continue;
-      if (typeof ref.path !== 'string' || typeof ref.name !== 'string' || typeof ref.type !== 'string' || !Number.isFinite(ref.size) || ref.size <= 0 || !ref.path.startsWith('audio/') || !entries.has(ref.path) || !/^[a-f0-9]{64}$/i.test(ref.sha256)) {
-        throw new Error(`Некорректная ссылка на аудио в песне «${song.artist} — ${song.title}».`);
-      }
-      const manifestFile = manifestByPath.get(ref.path);
-      if (!manifestFile || manifestFile.sha256 !== ref.sha256) throw new Error(`SHA-256 аудио «${ref.name}» не совпадает с manifest.`);
-      if (entries.get(ref.path)!.size !== ref.size || manifestFile.size !== ref.size) throw new Error(`Некорректный размер аудио «${ref.name}».`);
-    }
-  }
-}
-
-function validateGame(game: GameConfig) {
-  if (!game?.id || typeof game.title !== 'string' || !Number.isFinite(game.createdAt) || !Number.isFinite(game.updatedAt) || !Array.isArray(game.rounds) || !Array.isArray(game.teams)) {
-    throw new Error('Некорректная структура game.json.');
-  }
-  if (game.rounds.length < 1 || game.rounds.length > GAME_LIMITS.rounds) throw new Error('В game.json должно быть от 1 до 10 раундов.');
-  if (game.teams.length < 1 || game.teams.length > GAME_LIMITS.teams) throw new Error('Некорректное количество команд в game.json.');
-
-  const ids = new Set<string>();
-  const takeId = (id: unknown, entity: string) => {
-    if (typeof id !== 'string' || !id) throw new Error(`У ${entity} отсутствует корректный id.`);
-    if (ids.has(id)) throw new Error(`В game.json повторяется id «${id}».`);
-    ids.add(id);
+function remapGameSongs(sourceGame: GameConfig, songIdMap: Map<string, string>, gameId: string): GameConfig {
+  return {
+    ...sourceGame,
+    id: gameId,
+    rounds: sourceGame.rounds.map((round) => ({
+      ...round,
+      categories: round.categories.map((category) => ({
+        ...category,
+        questions: category.questions.map((question) => ({
+          ...question,
+          songId: question.songId ? songIdMap.get(question.songId) : undefined,
+        })),
+      })),
+    })),
   };
-  takeId(game.id, 'игры');
-
-  for (const team of game.teams) {
-    takeId(team?.id, 'команды');
-    if (typeof team.name !== 'string' || typeof team.color !== 'string' || !/^#[0-9a-f]{6}$/i.test(team.color)) throw new Error('Некорректная команда в game.json.');
-  }
-  for (const round of game.rounds) {
-    takeId(round?.id, 'раунда');
-    if (typeof round.name !== 'string' || !Array.isArray(round.categories) || round.categories.length > GAME_LIMITS.categoriesPerRound) {
-      throw new Error('Некорректный раунд в game.json.');
-    }
-    for (const category of round.categories) {
-      takeId(category?.id, 'категории');
-      if (typeof category.name !== 'string' || !Array.isArray(category.questions) || category.questions.length > GAME_LIMITS.questionsPerCategory) {
-        throw new Error('Некорректная категория в game.json.');
-      }
-      for (const question of category.questions) {
-        takeId(question?.id, 'вопроса');
-        if (!Number.isFinite(question.points) || question.points < 0 || (question.songId !== undefined && typeof question.songId !== 'string')) {
-          throw new Error('Некорректный вопрос в game.json.');
-        }
-      }
-    }
-  }
 }
 
 function songFingerprint(song: Song, hashById: Map<string, string>) {
@@ -528,11 +458,14 @@ function normalizeText(value: string) {
 
 function uniqueCopyTitle(title: string, games: GameConfig[]) {
   const used = new Set(games.map((game) => game.title));
-  const base = `${title} (копия)`;
-  if (!used.has(base)) return base;
-  let index = 2;
-  while (used.has(`${title} (копия ${index})`)) index += 1;
-  return `${title} (копия ${index})`;
+  let index = 1;
+  while (true) {
+    const suffix = index === 1 ? ' (копия)' : ` (копия ${index})`;
+    const sourceLength = Math.max(0, DATA_LIMITS.text.gameTitle - suffix.length);
+    const candidate = `${title.trim().slice(0, sourceLength).trimEnd()}${suffix}`.slice(0, DATA_LIMITS.text.gameTitle);
+    if (!used.has(candidate)) return candidate;
+    index += 1;
+  }
 }
 
 function safeFilename(value: string) {
@@ -546,6 +479,7 @@ function fileExtension(name: string, type: string) {
   if (type === 'audio/mpeg') return '.mp3';
   if (type === 'audio/wav' || type === 'audio/x-wav') return '.wav';
   if (type === 'audio/ogg') return '.ogg';
+  if (type === 'audio/flac') return '.flac';
   if (type === 'audio/mp4' || type === 'audio/x-m4a') return '.m4a';
   return '.bin';
 }

@@ -927,8 +927,10 @@ p { color: var(--muted); line-height: 1.6; }
   top: 12px;
   width: min(760px, calc(100vw - 32px));
   transform: translateX(-50%);
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 11px 14px;
   border: 1px solid rgba(251, 113, 133, .42);
   border-radius: 12px;
@@ -936,5 +938,19 @@ p { color: var(--muted); line-height: 1.6; }
   box-shadow: 0 12px 36px rgba(0, 0, 0, .35);
   color: #ffe4e6;
 }
+.storage-error-banner__text { min-width: 0; display: grid; gap: 3px; }
 .storage-error-banner strong { font-size: 12px; }
 .storage-error-banner span { color: #fecdd3; font-size: 11px; line-height: 1.4; }
+.storage-error-banner .secondary-button { flex: 0 0 auto; }
+.media-song-card__footer-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+@media (max-width: 760px) {
+  .storage-error-banner { align-items: stretch; flex-direction: column; }
+  .storage-error-banner .secondary-button { width: 100%; }
+}
+
+.storage-recovery { max-width: 760px; margin: 0 auto; padding: 40px 24px; text-align: center; }
+.storage-recovery strong { font-size: 20px; color: #ffe4e6; }
+.storage-recovery span { max-width: 680px; color: var(--muted); line-height: 1.55; }
+.storage-recovery small { max-width: 620px; color: var(--muted); line-height: 1.45; }
+.storage-save-status { min-height: 16px; padding: 0 10px 8px; color: var(--muted); font-size: 10px; text-align: center; }
+.import-note--warning { border-color: rgba(251, 191, 36, .24); background: rgba(251, 191, 36, .06); color: #fde68a; }

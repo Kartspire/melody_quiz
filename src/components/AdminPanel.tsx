@@ -25,7 +25,7 @@ import {
   teamChanged,
   teamRemoved,
 } from '../model/game';
-import { GAME_LIMITS } from '../model/limits';
+import { DATA_LIMITS, GAME_LIMITS } from '../model/limits';
 import { DraftNumberInput } from './DraftNumberInput';
 import { SongForm } from './SongForm';
 import { useEscapeClose } from './useEscapeClose';
@@ -36,6 +36,7 @@ export function AdminPanel() {
   const [config, songs, audioAssets, session] = useUnit([$activeGame, $songs, $audioAssets, $session]);
   const [tab, setTab] = useState<EditorTab>('structure');
   const [picker, setPicker] = useState<{ roundId: string; categoryId: string; questionId: string; songId?: string } | null>(null);
+  const songById = useMemo(() => new Map(songs.map((song) => [song.id, song])), [songs]);
 
   if (!config) return null;
 
@@ -102,7 +103,7 @@ export function AdminPanel() {
               <article className="round-editor" key={round.id}>
                 <div className="round-editor__header round-editor__header--actions">
                   <div className="round-number">{roundIndex + 1}</div>
-                  <input className="round-name-input" value={round.name} onChange={(event) => roundNameChanged({ roundId: round.id, name: event.target.value })} />
+                  <input className="round-name-input" maxLength={DATA_LIMITS.text.roundName} value={round.name} onChange={(event) => roundNameChanged({ roundId: round.id, name: event.target.value })} />
                   <button className="secondary-button" disabled={round.categories.length >= GAME_LIMITS.categoriesPerRound} onClick={() => categoryAdded({ roundId: round.id })}>+ Категория</button>
                   <button
                     className="danger-ghost"
@@ -120,6 +121,7 @@ export function AdminPanel() {
                     <section className="category-editor" key={category.id}>
                       <div className="category-editor__header">
                         <input
+                          maxLength={DATA_LIMITS.text.categoryName}
                           value={category.name}
                           onChange={(event) => categoryNameChanged({ roundId: round.id, categoryId: category.id, name: event.target.value })}
                           placeholder="Название категории"
@@ -138,7 +140,7 @@ export function AdminPanel() {
 
                       <div className="question-list">
                         {category.questions.map((question) => {
-                          const song = songs.find((item) => item.id === question.songId);
+                          const song = question.songId ? songById.get(question.songId) : undefined;
                           return (
                             <article className="question-editor question-editor--library" key={question.id}>
                               <label className="field compact-field">
@@ -214,7 +216,7 @@ export function AdminPanel() {
                   onChange={(event) => teamChanged({ teamId: team.id, patch: { color: event.target.value } })}
                   aria-label={`Цвет ${team.name}`}
                 />
-                <label className="field"><span>Название команды</span><input value={team.name} onChange={(event) => teamChanged({ teamId: team.id, patch: { name: event.target.value } })} placeholder="Название команды" /></label>
+                <label className="field"><span>Название команды</span><input maxLength={DATA_LIMITS.text.teamName} value={team.name} onChange={(event) => teamChanged({ teamId: team.id, patch: { name: event.target.value } })} placeholder="Название команды" /></label>
                 <button
                   className="danger-ghost"
                   disabled={config.teams.length <= 1}
@@ -234,7 +236,7 @@ export function AdminPanel() {
           <section className="admin-section">
             <div className="section-title"><div><h2>Основные настройки</h2><p>Параметры только этой игры.</p></div></div>
             <div className="game-settings-grid">
-              <label className="field"><span>Название игры</span><input value={config.title} onChange={(event) => gameTitleChanged(event.target.value)} /></label>
+              <label className="field"><span>Название игры</span><input maxLength={DATA_LIMITS.text.gameTitle} value={config.title} onChange={(event) => gameTitleChanged(event.target.value)} /></label>
               <div className="readonly-setting"><span>Раундов</span><strong>{config.rounds.length}</strong><small>Добавляются во вкладке «Структура игры»</small></div>
               <div className="readonly-setting"><span>Вопросов</span><strong>{questionsCount}</strong><small>{assignedCount} с назначенными песнями</small></div>
               <div className="readonly-setting"><span>Команд</span><strong>{config.teams.length}</strong><small>Настраиваются во вкладке «Команды»</small></div>

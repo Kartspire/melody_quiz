@@ -1,4 +1,6 @@
 import { createId } from '../lib/ids';
+import { canonicalizeAudioAsset, createContentAddressedAudioAsset } from '../lib/audio';
+import { DATA_LIMITS } from './limits';
 import type {
   AudioAsset,
   Category,
@@ -11,6 +13,18 @@ import type {
   Song,
   Team,
 } from './types';
+
+
+function boundedText(value: string, maxLength: number, fallback = '') {
+  const trimmed = value.trim();
+  return (trimmed || fallback).slice(0, maxLength);
+}
+
+function withSuffix(value: string, suffix: string, maxLength: number, fallback: string) {
+  const source = value.trim() || fallback;
+  const allowedSourceLength = Math.max(0, maxLength - suffix.length);
+  return `${source.slice(0, allowedSourceLength).trimEnd()}${suffix}`.slice(0, maxLength);
+}
 
 const TEAM_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1', '#14b8a6', '#e11d48'];
 
@@ -41,7 +55,7 @@ export const createGame = (title = 'Новая игра'): GameConfig => {
   const now = Date.now();
   return {
     id: createId('game'),
-    title,
+    title: boundedText(title, DATA_LIMITS.text.gameTitle, 'Новая игра'),
     rounds: [createRound(0)],
     teams: [createTeam(0), createTeam(1)],
     createdAt: now,
@@ -53,7 +67,7 @@ export const cloneGame = (source: GameConfig): GameConfig => {
   const now = Date.now();
   return {
     id: createId('game'),
-    title: `${source.title} — копия`,
+    title: withSuffix(source.title, ' — копия', DATA_LIMITS.text.gameTitle, 'Без названия'),
     createdAt: now,
     updatedAt: now,
     teams: source.teams.map((team, index) => ({ ...team, id: createId(`team-${index + 1}`) })),
@@ -83,13 +97,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   nextExcludedTeamIds: [],
 });
 
-export const createAudioAsset = (file: File): AudioAsset => ({
-  id: createId('audio'),
-  name: file.name,
-  type: file.type,
-  size: file.size,
-  blob: file,
-});
+export const createAudioAsset = (file: File) => createContentAddressedAudioAsset(file);
 
 export const createSong = ({
   artist,
@@ -105,10 +113,21 @@ export const createSong = ({
   const now = Date.now();
   return {
     id: createId('song'),
-    artist: artist.trim(),
-    title: title.trim(),
+    artist: boundedText(artist, DATA_LIMITS.text.artist),
+    title: boundedText(title, DATA_LIMITS.text.songTitle),
     minusAudioId: minus?.id,
     plusAudioId: plus?.id,
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+export const cloneSong = (source: Song): Song => {
+  const now = Date.now();
+  return {
+    ...source,
+    id: createId('song'),
+    title: withSuffix(source.title, ' — копия', DATA_LIMITS.text.songTitle, 'Без названия'),
     createdAt: now,
     updatedAt: now,
   };
@@ -126,31 +145,33 @@ export const createInitialState = (): PersistedState => {
   };
 };
 
-export const migrateLegacyState = (legacy: LegacyPersistedState): PersistedState => {
+export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<PersistedState> => {
   const now = Date.now();
   const gameId = createId('game');
   const songs: Song[] = [];
-  const audioAssets: AudioAsset[] = [];
+  const audioByHash = new Map<string, AudioAsset>();
 
-  const rounds = legacy.config.rounds.map((round) => ({
-    id: round.id,
-    name: round.name,
-    categories: round.categories.map((category) => ({
-      id: category.id,
-      name: category.name,
-      questions: category.questions.map((question) => {
+  const rounds = [] as GameConfig['rounds'];
+  for (const round of legacy.config.rounds) {
+    const categories = [] as GameConfig['rounds'][number]['categories'];
+    for (const category of round.categories) {
+      const questions = [] as Question[];
+      for (const question of category.questions) {
         const minus = question.minus
-          ? { ...question.minus, id: createId('audio') }
+          ? await canonicalizeAudioAsset({ name: question.minus.name, type: question.minus.type, blob: question.minus.blob })
           : undefined;
         const plus = question.plus
-          ? { ...question.plus, id: createId('audio') }
+          ? await canonicalizeAudioAsset({ name: question.plus.name, type: question.plus.type, blob: question.plus.blob })
           : undefined;
 
-        if (minus) audioAssets.push(minus);
-        if (plus) audioAssets.push(plus);
+        if (minus) audioByHash.set(minus.id, minus);
+        if (plus) audioByHash.set(plus.id, plus);
 
         const hasSongData = Boolean(question.artist || question.title || minus || plus);
-        if (!hasSongData) return { id: question.id, points: question.points };
+        if (!hasSongData) {
+          questions.push({ id: question.id, points: question.points });
+          continue;
+        }
 
         const song: Song = {
           id: createId('song'),
@@ -162,10 +183,12 @@ export const migrateLegacyState = (legacy: LegacyPersistedState): PersistedState
           updatedAt: now,
         };
         songs.push(song);
-        return { id: question.id, points: question.points, songId: song.id };
-      }),
-    })),
-  }));
+        questions.push({ id: question.id, points: question.points, songId: song.id });
+      }
+      categories.push({ id: category.id, name: category.name, questions });
+    }
+    rounds.push({ id: round.id, name: round.name, categories });
+  }
 
   const game: GameConfig = {
     id: gameId,
@@ -195,7 +218,7 @@ export const migrateLegacyState = (legacy: LegacyPersistedState): PersistedState
     version: 2,
     games: [game],
     songs,
-    audioAssets,
+    audioAssets: [...audioByHash.values()],
     sessions: [session],
     activeGameId: gameId,
   };

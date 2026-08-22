@@ -1,10 +1,10 @@
 export type AudioAsset = {
-  id: string;
-  name: string;
-  type: string;
-  size: number;
-  blob: Blob;
-  sha256?: string;
+  readonly id: string;
+  readonly name: string;
+  readonly type: string;
+  readonly blob: Blob;
+  readonly sha256: string;
+  readonly verified: true;
 };
 
 export type Song = {
@@ -73,7 +73,12 @@ export type PersistedState = {
   activeGameId: string | null;
 };
 
-export type LegacyAudioAsset = Omit<AudioAsset, 'id'>;
+export type LegacyAudioAsset = {
+  name: string;
+  type: string;
+  size?: number;
+  blob: Blob;
+};
 
 export type LegacyQuestion = {
   id: string;

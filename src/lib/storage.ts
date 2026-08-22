@@ -1,8 +1,11 @@
-import { createInitialState, migrateLegacyState } from '../model/defaults';
+import { canonicalizeAudioAsset } from './audio';
+import { createInitialState, createSession, migrateLegacyState } from '../model/defaults';
+import { reconcileSession } from '../model/session';
+import { assertValidPersistedState } from '../model/validation';
 import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, PersistedState, Song } from '../model/types';
 
 const DB_NAME = 'melody-quiz-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const LEGACY_STORE = 'state';
 const LEGACY_STATE_KEY = 'app-state';
 const GAMES_STORE = 'games';
@@ -12,6 +15,42 @@ const SESSIONS_STORE = 'sessions';
 const META_STORE = 'meta';
 const ACTIVE_GAME_KEY = 'active-game-id';
 const STATE_INITIALIZED_KEY = 'state-initialized';
+const REVISION_KEY = 'state-revision';
+
+let knownRevision = 0;
+let lastSavedState: PersistedState | null = null;
+let saveQueue: Promise<void> = Promise.resolve();
+
+
+const TAB_ID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+const externalChangeListeners = new Set<(revision: number) => void>();
+const storageChannel = typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('melody-quiz-storage-v1')
+  : null;
+
+if (storageChannel) {
+  storageChannel.onmessage = (event: MessageEvent<{ source?: string; revision?: number }>) => {
+    const message = event.data;
+    if (!message || message.source === TAB_ID || !Number.isSafeInteger(message.revision) || message.revision! <= knownRevision) return;
+    for (const listener of externalChangeListeners) listener(message.revision!);
+  };
+}
+
+export function subscribeToExternalStorageChanges(listener: (revision: number) => void) {
+  externalChangeListeners.add(listener);
+  return () => externalChangeListeners.delete(listener);
+}
+
+function announceRevision() {
+  storageChannel?.postMessage({ source: TAB_ID, revision: knownRevision });
+}
+
+export class StorageConflictError extends Error {
+  constructor() {
+    super('Данные были изменены в другой вкладке. Эта вкладка не будет перезаписывать более новую версию. Обновите страницу.');
+    this.name = 'StorageConflictError';
+  }
+}
 
 const openDatabase = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
@@ -29,6 +68,7 @@ const openDatabase = () =>
 
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error('Обновление локальной базы заблокировано другой открытой вкладкой. Закройте другие вкладки игры и повторите.'));
   });
 
 const requestValue = <T>(request: IDBRequest<T>) =>
@@ -39,96 +79,267 @@ const requestValue = <T>(request: IDBRequest<T>) =>
 
 export const loadState = async (): Promise<PersistedState> => {
   const db = await openDatabase();
-  const transaction = db.transaction(
-    [GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
-    'readonly',
+  try {
+    const transaction = db.transaction(
+      [GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
+      'readonly',
+    );
+
+    const [games, songs, rawAudioAssets, sessions, activeGameId, initialized, revision, legacy] = await Promise.all([
+      requestValue(transaction.objectStore(GAMES_STORE).getAll() as IDBRequest<GameConfig[]>),
+      requestValue(transaction.objectStore(SONGS_STORE).getAll() as IDBRequest<Song[]>),
+      requestValue(transaction.objectStore(AUDIO_STORE).getAll() as IDBRequest<Array<Partial<AudioAsset> & { size?: number }>>),
+      requestValue(transaction.objectStore(SESSIONS_STORE).getAll() as IDBRequest<GameSession[]>),
+      requestValue(transaction.objectStore(META_STORE).get(ACTIVE_GAME_KEY) as IDBRequest<string | null | undefined>),
+      requestValue(transaction.objectStore(META_STORE).get(STATE_INITIALIZED_KEY) as IDBRequest<boolean | undefined>),
+      requestValue(transaction.objectStore(META_STORE).get(REVISION_KEY) as IDBRequest<number | undefined>),
+      requestValue(transaction.objectStore(LEGACY_STORE).get(LEGACY_STATE_KEY) as IDBRequest<LegacyPersistedState | undefined>),
+    ]);
+
+    knownRevision = Number.isSafeInteger(revision) && (revision ?? 0) >= 0 ? revision! : 0;
+
+    if (games.length > 0 || initialized) {
+      const canonical = await canonicalizeLoadedState({
+        version: 2,
+        games,
+        songs,
+        audioAssets: rawAudioAssets,
+        sessions,
+        activeGameId: games.some((game) => game.id === activeGameId) ? activeGameId! : games[0]?.id ?? null,
+      });
+      assertValidPersistedState(canonical.state);
+      lastSavedState = canonical.state;
+
+      if (canonical.changed) {
+        await rewriteCanonicalState(canonical.state, true);
+        lastSavedState = canonical.state;
+      }
+      return canonical.state;
+    }
+
+    const state = legacy?.config && legacy?.session ? await migrateLegacyState(legacy) : createInitialState();
+    assertValidPersistedState(state);
+    lastSavedState = null;
+    await rewriteCanonicalState(state, true);
+    await deleteLegacyState();
+    lastSavedState = state;
+    return state;
+  } finally {
+    db.close();
+  }
+};
+
+export const saveState = (state: PersistedState): Promise<void> => {
+  const snapshot = state;
+  const task = saveQueue.then(() => saveStateInternal(snapshot));
+  saveQueue = task.catch(() => undefined);
+  return task;
+};
+
+async function saveStateInternal(state: PersistedState): Promise<void> {
+  assertValidPersistedState(state);
+  const db = await openDatabase();
+  try {
+    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    const metaStore = transaction.objectStore(META_STORE);
+    const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
+    const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
+    if (actualRevision !== knownRevision) {
+      transaction.abort();
+      throw new StorageConflictError();
+    }
+
+    applyStateDiff(transaction, lastSavedState, state);
+    metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
+    metaStore.put(true, STATE_INITIALIZED_KEY);
+    metaStore.put(actualRevision + 1, REVISION_KEY);
+
+    await transactionDone(transaction);
+    knownRevision = actualRevision + 1;
+    lastSavedState = state;
+    announceRevision();
+  } finally {
+    db.close();
+  }
+}
+
+async function rewriteCanonicalState(state: PersistedState, allowCurrentRevision: boolean): Promise<void> {
+  const db = await openDatabase();
+  try {
+    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    const gamesStore = transaction.objectStore(GAMES_STORE);
+    const songsStore = transaction.objectStore(SONGS_STORE);
+    const audioStore = transaction.objectStore(AUDIO_STORE);
+    const sessionsStore = transaction.objectStore(SESSIONS_STORE);
+    const metaStore = transaction.objectStore(META_STORE);
+    const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
+    const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
+    if (!allowCurrentRevision && actualRevision !== knownRevision) {
+      transaction.abort();
+      throw new StorageConflictError();
+    }
+
+    gamesStore.clear();
+    songsStore.clear();
+    audioStore.clear();
+    sessionsStore.clear();
+    state.games.forEach((game) => gamesStore.put(game));
+    state.songs.forEach((song) => songsStore.put(song));
+    state.audioAssets.forEach((asset) => audioStore.put(asset));
+    state.sessions.forEach((session) => sessionsStore.put(session));
+    metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
+    metaStore.put(true, STATE_INITIALIZED_KEY);
+    metaStore.put(actualRevision + 1, REVISION_KEY);
+
+    await transactionDone(transaction);
+    knownRevision = actualRevision + 1;
+    announceRevision();
+  } finally {
+    db.close();
+  }
+}
+
+function applyStateDiff(transaction: IDBTransaction, previous: PersistedState | null, next: PersistedState) {
+  syncStore(
+    transaction.objectStore(GAMES_STORE),
+    previous?.games ?? [],
+    next.games,
+    (item) => item.id,
+    (before, after) => before.updatedAt === after.updatedAt && before === after,
   );
+  syncStore(
+    transaction.objectStore(SONGS_STORE),
+    previous?.songs ?? [],
+    next.songs,
+    (item) => item.id,
+    (before, after) => before.updatedAt === after.updatedAt && before === after,
+  );
+  syncStore(
+    transaction.objectStore(SESSIONS_STORE),
+    previous?.sessions ?? [],
+    next.sessions,
+    (item) => item.gameId,
+    (before, after) => before === after || JSON.stringify(before) === JSON.stringify(after),
+  );
+  syncStore(
+    transaction.objectStore(AUDIO_STORE),
+    previous?.audioAssets ?? [],
+    next.audioAssets,
+    (item) => item.id,
+    (before, after) => before.id === after.id,
+  );
+}
 
-  const [games, songs, audioAssets, sessions, activeGameId, initialized, legacy] = await Promise.all([
-    requestValue(transaction.objectStore(GAMES_STORE).getAll() as IDBRequest<GameConfig[]>),
-    requestValue(transaction.objectStore(SONGS_STORE).getAll() as IDBRequest<Song[]>),
-    requestValue(transaction.objectStore(AUDIO_STORE).getAll() as IDBRequest<AudioAsset[]>),
-    requestValue(transaction.objectStore(SESSIONS_STORE).getAll() as IDBRequest<GameSession[]>),
-    requestValue(transaction.objectStore(META_STORE).get(ACTIVE_GAME_KEY) as IDBRequest<string | null | undefined>),
-    requestValue(transaction.objectStore(META_STORE).get(STATE_INITIALIZED_KEY) as IDBRequest<boolean | undefined>),
-    requestValue(transaction.objectStore(LEGACY_STORE).get(LEGACY_STATE_KEY) as IDBRequest<LegacyPersistedState | undefined>),
-  ]);
+function syncStore<T>(
+  store: IDBObjectStore,
+  previous: T[],
+  next: T[],
+  keyOf: (item: T) => string,
+  equal: (before: T, after: T) => boolean,
+) {
+  const previousById = new Map(previous.map((item) => [keyOf(item), item]));
+  const nextIds = new Set(next.map(keyOf));
+  for (const item of previous) {
+    const key = keyOf(item);
+    if (!nextIds.has(key)) store.delete(key);
+  }
+  for (const item of next) {
+    const previousItem = previousById.get(keyOf(item));
+    if (!previousItem || !equal(previousItem, item)) store.put(item);
+  }
+}
 
-  db.close();
+async function canonicalizeLoadedState(raw: {
+  version: 2;
+  games: GameConfig[];
+  songs: Song[];
+  audioAssets: Array<Partial<AudioAsset> & { size?: number }>;
+  sessions: GameSession[];
+  activeGameId: string | null;
+}): Promise<{ state: PersistedState; changed: boolean }> {
+  const audioAssets: AudioAsset[] = [];
+  const canonicalByHash = new Map<string, AudioAsset>();
+  const oldToNewId = new Map<string, string>();
+  let changed = false;
 
-  if (games.length > 0 || initialized) {
-    return {
-      version: 2,
-      games,
-      songs,
-      audioAssets,
-      sessions,
-      activeGameId: games.some((game) => game.id === activeGameId) ? activeGameId! : games[0]?.id ?? null,
-    };
+  for (const rawAsset of raw.audioAssets) {
+    const oldId = typeof rawAsset.id === 'string' ? rawAsset.id : '';
+    const canonical = await canonicalizeAudioAsset(rawAsset);
+    if (oldId) oldToNewId.set(oldId, canonical.id);
+    if (oldId !== canonical.id || rawAsset.sha256 !== canonical.sha256 || rawAsset.verified !== true || 'size' in rawAsset) changed = true;
+    if (!canonicalByHash.has(canonical.id)) {
+      canonicalByHash.set(canonical.id, canonical);
+      audioAssets.push(canonical);
+    } else {
+      changed = true;
+    }
   }
 
-  const state = legacy?.config && legacy?.session ? migrateLegacyState(legacy) : createInitialState();
-  await saveState(state);
-  return state;
-};
-
-export const saveState = async (state: PersistedState): Promise<void> => {
-  const db = await openDatabase();
-  const transaction = db.transaction([GAMES_STORE, SONGS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
-
-  const gamesStore = transaction.objectStore(GAMES_STORE);
-  const songsStore = transaction.objectStore(SONGS_STORE);
-  const audioStore = transaction.objectStore(AUDIO_STORE);
-  const sessionsStore = transaction.objectStore(SESSIONS_STORE);
-  const metaStore = transaction.objectStore(META_STORE);
-
-  // Lightweight entities are cheap to rewrite and this keeps their persistence atomic/simple.
-  gamesStore.clear();
-  songsStore.clear();
-  sessionsStore.clear();
-
-  state.games.forEach((game) => gamesStore.put(game));
-  state.songs.forEach((song) => songsStore.put(song));
-  state.sessions.forEach((session) => sessionsStore.put(session));
-  metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
-  metaStore.put(true, STATE_INITIALIZED_KEY);
-
-  // Audio blobs can be hundreds of megabytes. Keep existing immutable blobs and only
-  // add new ids / remove ids that are no longer referenced instead of rewriting all audio
-  // after every small editor change.
-  const usedAudioIds = new Set(
-    state.songs.flatMap((song) => [song.minusAudioId, song.plusAudioId].filter((id): id is string => Boolean(id))),
-  );
-  const wantedAssets = state.audioAssets.filter((asset) => usedAudioIds.has(asset.id));
-  const audioKeysRequest = audioStore.getAllKeys();
-  audioKeysRequest.onsuccess = () => {
-    const existingIds = new Set<string>();
-    for (const key of audioKeysRequest.result) {
-      if (typeof key === 'string') {
-        existingIds.add(key);
-        if (!usedAudioIds.has(key)) audioStore.delete(key);
-      } else {
-        audioStore.delete(key);
-      }
-    }
-    for (const asset of wantedAssets) {
-      if (!existingIds.has(asset.id)) audioStore.put(asset);
-    }
-  };
-  audioKeysRequest.onerror = () => transaction.abort();
-
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => {
-      db.close();
-      resolve();
-    };
-    transaction.onerror = () => {
-      db.close();
-      reject(transaction.error);
-    };
-    transaction.onabort = () => {
-      db.close();
-      reject(transaction.error ?? audioKeysRequest.error);
-    };
+  const songs = raw.songs.map((song) => {
+    const minusAudioId = song.minusAudioId ? oldToNewId.get(song.minusAudioId) ?? song.minusAudioId : undefined;
+    const plusAudioId = song.plusAudioId ? oldToNewId.get(song.plusAudioId) ?? song.plusAudioId : undefined;
+    if (minusAudioId !== song.minusAudioId || plusAudioId !== song.plusAudioId) changed = true;
+    return { ...song, minusAudioId, plusAudioId };
   });
-};
+
+  const gameById = new Map(raw.games.map((game) => [game.id, game]));
+  const sessionsByGameId = new Map<string, GameSession>();
+  for (const rawSession of raw.sessions) {
+    const game = gameById.get(rawSession?.gameId);
+    if (!game || sessionsByGameId.has(game.id)) {
+      changed = true;
+      continue;
+    }
+    const reconciled = reconcileSession(game, rawSession);
+    if (JSON.stringify(reconciled) !== JSON.stringify(rawSession)) changed = true;
+    sessionsByGameId.set(game.id, reconciled);
+  }
+  for (const game of raw.games) {
+    if (!sessionsByGameId.has(game.id)) {
+      sessionsByGameId.set(game.id, createSession(game));
+      changed = true;
+    }
+  }
+  const sessions = [...sessionsByGameId.values()];
+
+  return {
+    changed,
+    state: { ...raw, songs, audioAssets, sessions },
+  };
+}
+
+async function deleteLegacyState() {
+  const db = await openDatabase();
+  try {
+    if (!db.objectStoreNames.contains(LEGACY_STORE)) return;
+    const transaction = db.transaction(LEGACY_STORE, 'readwrite');
+    transaction.objectStore(LEGACY_STORE).delete(LEGACY_STATE_KEY);
+    await transactionDone(transaction);
+  } finally {
+    db.close();
+  }
+}
+
+function transactionDone(transaction: IDBTransaction) {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error('Ошибка транзакции IndexedDB.'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('Транзакция IndexedDB отменена.'));
+  });
+}
+
+export async function getStorageEstimate() {
+  if (typeof navigator === 'undefined' || !navigator.storage?.estimate) return null;
+  const estimate = await navigator.storage.estimate();
+  return { usage: estimate.usage ?? 0, quota: estimate.quota ?? 0 };
+}
+
+export async function requestPersistentStorage() {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persist) return false;
+  return navigator.storage.persist();
+}
+
+export async function isPersistentStorage() {
+  if (typeof navigator === 'undefined' || !navigator.storage?.persisted) return false;
+  return navigator.storage.persisted();
+}
