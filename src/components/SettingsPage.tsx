@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useUnit } from 'effector-react';
+import { formatBytes } from '../lib/format';
 import { getStorageEstimate, isPersistentStorage, requestPersistentStorage } from '../lib/storage';
-import { $games, $mediaTracks, $persistedState, $songs, screenChanged } from '../model/game';
+import { $games, $mediaTracks, $persistedState, $songs } from '../model/game';
 
 export function SettingsPage() {
   const [games, songs, mediaTracks, persistedState] = useUnit([$games, $songs, $mediaTracks, $persistedState]);
@@ -62,19 +63,19 @@ export function SettingsPage() {
           </div>
         </div>
         <div className="settings-action-list">
-          <div><strong>Игры</strong><span>Каждую игру можно экспортировать вместе со всеми используемыми песнями.</span></div>
-          <button className="secondary-button" onClick={() => screenChanged('library')}>Перейти к играм</button>
-          <div><strong>Медиатека</strong><span>Можно сохранить песни и независимые аудиотреки одним архивом и восстановить её позже.</span></div>
-          <button className="secondary-button" onClick={() => screenChanged('media')}>Перейти в медиатеку</button>
-          <div>
-            <strong>Защита локального хранилища</strong>
-            <span>{persistent === true ? 'Браузер подтвердил persistent storage: риск автоматического удаления данных снижен.' : persistent === false ? 'Persistent storage пока не предоставлен браузером.' : 'Проверяем статус persistent storage…'}</span>
+          <div><strong>Игры</strong><span>Резервную копию отдельной игры можно создать через меню «⋯» на странице «Мои игры».</span></div>
+          <div><strong>Медиатека</strong><span>Полную медиатеку можно экспортировать через меню «⋯» на странице «Медиатека».</span></div>
+          <div className="settings-storage-action">
+            <div>
+              <strong>Защита локального хранилища</strong>
+              <span>{persistent === true ? 'Браузер подтвердил persistent storage: риск автоматического удаления данных снижен.' : persistent === false ? 'Persistent storage пока не предоставлен браузером.' : 'Проверяем статус persistent storage…'}</span>
+            </div>
+            {persistent !== true && (
+              <button className="secondary-button" disabled={persistBusy} onClick={() => void enablePersistentStorage()}>
+                {persistBusy ? 'Запрашиваем…' : 'Защитить локальные данные'}
+              </button>
+            )}
           </div>
-          {persistent !== true && (
-            <button className="secondary-button" disabled={persistBusy} onClick={() => void enablePersistentStorage()}>
-              {persistBusy ? 'Запрашиваем…' : 'Защитить локальные данные'}
-            </button>
-          )}
         </div>
       </section>
 
@@ -84,11 +85,4 @@ export function SettingsPage() {
       </section>
     </main>
   );
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} КБ`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} МБ`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} ГБ`;
 }

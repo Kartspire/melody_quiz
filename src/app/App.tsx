@@ -2,18 +2,14 @@ import { useMemo } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeGame,
-  $audioAssets,
   $games,
   $hydrated,
-  $mediaTracks,
   $screen,
   $storageError,
   $storageReadOnly,
   $storageSaveStatus,
   $sessions,
-  $songs,
-  activeGameChanged,
-  getSessionContinuationIssues,
+  gameLaunchRequested,
   hasSessionProgress,
   screenChanged,
   storageRetryRequested,
@@ -25,17 +21,15 @@ import { GameLibrary } from '../components/GameLibrary';
 import { MediaLibrary } from '../components/MediaLibrary';
 import { Scoreboard } from '../components/Scoreboard';
 import { SettingsPage } from '../components/SettingsPage';
+import { GameLaunchDialog } from '../components/GameLaunchDialog';
 
 export function App() {
-  const [screen, hydrated, activeGame, games, sessions, songs, mediaTracks, audioAssets, storageError, storageReadOnly, storageSaveStatus] = useUnit([
+  const [screen, hydrated, activeGame, games, sessions, storageError, storageReadOnly, storageSaveStatus] = useUnit([
     $screen,
     $hydrated,
     $activeGame,
     $games,
     $sessions,
-    $songs,
-    $mediaTracks,
-    $audioAssets,
     $storageError,
     $storageReadOnly,
     $storageSaveStatus,
@@ -87,6 +81,7 @@ export function App() {
           </div>
         </header>
         <GameBoard />
+        <GameLaunchDialog />
       </div>
     );
   }
@@ -109,7 +104,7 @@ export function App() {
         <div className="sidebar-spacer" />
         <small className="storage-save-status">{storageSaveStatus === 'saving' ? 'Сохраняем…' : storageSaveStatus === 'error' ? 'Ошибка сохранения' : storageSaveStatus === 'saved' ? 'Изменения сохранены' : ''}</small>
 
-        {sidebarGame && sidebarSession && (
+        {screen !== 'library' && sidebarGame && sidebarSession && (
           <section className="active-session-card">
             <div className="active-session-card__status"><span /> {sidebarFinished ? 'Игра завершена' : 'Сохранённая партия'}</div>
             <strong>{sidebarGame.title || 'Без названия'}</strong>
@@ -119,20 +114,14 @@ export function App() {
                 : `Этап ${Math.min(sidebarSession.stageIndex + 1, sidebarGame.stages.length)} из ${sidebarGame.stages.length} · сыграно ${sidebarSession.completedQuestionIds.length}`}
               {savedSessionGames.length > 1 ? ` · ещё партий: ${savedSessionGames.length - 1}` : ''}
             </small>
-            <button onClick={() => {
-              const issues = sidebarFinished ? [] : getSessionContinuationIssues(sidebarGame, sidebarSession, songs, mediaTracks, audioAssets);
-              activeGameChanged(sidebarGame.id);
-              if (issues.length > 0) {
-                window.alert('Игра была изменена и сейчас не готова к продолжению. Откройте редактор и исправьте недостающие песни/аудио.');
-                screenChanged('admin');
-                return;
-              }
-              screenChanged('game');
-            }}>{sidebarFinished ? 'Открыть результаты →' : 'Продолжить →'}</button>
+            <button onClick={() => gameLaunchRequested({ gameId: sidebarGame.id, mode: 'continue' })}>
+              {sidebarFinished ? 'Открыть результаты →' : 'Продолжить →'}
+            </button>
           </section>
         )}
       </aside>
 
+      <GameLaunchDialog />
       <div className="app-content">
         {screen === 'library' && <GameLibrary />}
         {screen === 'media' && <MediaLibrary />}

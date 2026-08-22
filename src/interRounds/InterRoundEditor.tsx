@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $mediaTracks,
@@ -12,7 +12,7 @@ import {
   interRoundRemoved,
   interRoundTitleChanged,
 } from '../model/game';
-import { DATA_LIMITS, GAME_LIMITS } from '../model/limits';
+import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from '../model/limits';
 import type { InterRound } from '../model/types';
 import { DraftNumberInput } from '../components/DraftNumberInput';
 import { MediaTrackPicker } from '../components/MediaTrackPicker';
@@ -34,7 +34,6 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
           <strong>{template.name}</strong>
           <p>{template.shortDescription}</p>
         </div>
-        <span className="template-version">v{interRound.templateVersion}</span>
       </div>
 
       <label className="field">
@@ -78,7 +77,12 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
                   </div>
                   <label className="field compact-field">
                     <span>Слов в ответе</span>
-                    <DraftNumberInput value={task.requiredWordsCount} min={1} max={100} onCommit={(requiredWordsCount) => continueLyricsTaskChanged({ interRoundId: interRound.id, taskId: task.id, patch: { requiredWordsCount } })} />
+                    <DraftNumberInput
+                      value={task.requiredWordsCount}
+                      min={INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.min}
+                      max={INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.max}
+                      onCommit={(requiredWordsCount) => continueLyricsTaskChanged({ interRoundId: interRound.id, taskId: task.id, patch: { requiredWordsCount } })}
+                    />
                   </label>
                   <label className="field compact-field">
                     <span>Момент остановки</span>
@@ -182,6 +186,7 @@ function DraftSecondsInput({ valueMs, onCommit }: { valueMs: number; onCommit: (
   const format = (value: number) => String(Math.round(value) / 1000).replace('.', ',');
   const [draft, setDraft] = useState(format(valueMs));
   const [focused, setFocused] = useState(false);
+  const skipNextBlurCommit = useRef(false);
 
   useEffect(() => {
     if (!focused) setDraft(format(valueMs));
@@ -194,10 +199,13 @@ function DraftSecondsInput({ valueMs, onCommit }: { valueMs: number; onCommit: (
       setDraft(format(valueMs));
       return;
     }
-    const boundedSeconds = Math.min(21_600, Math.max(0.5, seconds));
+    const boundedSeconds = Math.min(
+      INTER_ROUND_LIMITS.continueLyrics.cutAtMs.max / 1000,
+      Math.max(INTER_ROUND_LIMITS.continueLyrics.cutAtMs.min / 1000, seconds),
+    );
     const nextMs = Math.round(boundedSeconds * 1000);
     setDraft(format(nextMs));
-    onCommit(nextMs);
+    if (nextMs !== valueMs) onCommit(nextMs);
   };
 
   return (
@@ -212,10 +220,22 @@ function DraftSecondsInput({ valueMs, onCommit }: { valueMs: number; onCommit: (
           if (!/^\d*(?:[.,]\d{0,3})?$/.test(next)) return;
           setDraft(next);
         }}
-        onBlur={() => { setFocused(false); commit(); }}
+        onBlur={() => {
+          setFocused(false);
+          if (skipNextBlurCommit.current) {
+            skipNextBlurCommit.current = false;
+            setDraft(format(valueMs));
+            return;
+          }
+          commit();
+        }}
         onKeyDown={(event) => {
           if (event.key === 'Enter') event.currentTarget.blur();
-          if (event.key === 'Escape') { setDraft(format(valueMs)); event.currentTarget.blur(); }
+          if (event.key === 'Escape') {
+            skipNextBlurCommit.current = true;
+            setDraft(format(valueMs));
+            event.currentTarget.blur();
+          }
         }}
         aria-label="Время остановки трека в секундах"
       />

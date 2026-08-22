@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $audioAssets,
@@ -17,9 +17,8 @@ import {
   songTrackChanged,
 } from '../model/game';
 import { createAudioAsset, createMediaTrack } from '../model/defaults';
-import type { AudioAsset, GameConfig, MediaTrack, Song } from '../model/types';
+import type { AudioAsset, MediaTrack, Song } from '../model/types';
 import { DATA_LIMITS } from '../model/limits';
-import { getInterRoundTrackIds } from '../interRounds/templates';
 import {
   downloadBlob,
   exportLibraryPackage,
@@ -29,9 +28,16 @@ import {
   type ParsedMelodyPackage,
   type PreparedMediaMerge,
 } from '../lib/melodyPackage';
+import { AUDIO_FILE_ACCEPT } from '../lib/audio';
+import { getErrorMessage } from '../lib/errors';
+import { formatBytes } from '../lib/format';
+import { normalizeSearchText } from '../lib/search';
+import { buildMediaTrackUsageMap, buildSongUsageMap, type MediaTrackUsage, type SongUsage } from '../model/media/selectors';
+import { useObjectUrl } from '../hooks/useObjectUrl';
 import { ActionMenu } from './ActionMenu';
 import { SongForm } from './SongForm';
-import { useEscapeClose } from './useEscapeClose';
+import { Dialog } from './Dialog';
+import { ImportVerificationSummary } from './ImportVerificationSummary';
 
 type MediaTab = 'songs' | 'audio';
 
@@ -47,46 +53,21 @@ export function MediaLibrary() {
 
   const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
   const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
-  const usageBySongId = useMemo(() => buildSongUsage(games), [games]);
-  const trackUsage = useMemo(() => {
-    const result = new Map<string, Array<{ sourceId: string; label: string; role: string }>>();
-    for (const song of songs) {
-      for (const [trackId, role] of [[song.minusTrackId, 'минус'], [song.plusTrackId, 'плюс']] as const) {
-        if (!trackId) continue;
-        const items = result.get(trackId) ?? [];
-        items.push({ sourceId: song.id, label: `${song.artist || 'Без исполнителя'} — ${song.title || 'Без названия'}`, role });
-        result.set(trackId, items);
-      }
-    }
-    for (const game of games) {
-      for (const interRound of game.interRounds) {
-        const refs = getInterRoundTrackIds(interRound).map((trackId, index) => ({
-          trackId,
-          role: interRound.templateId === 'continueLyrics' ? `задание ${index + 1}` : `трек ${index + 1}`,
-        }));
-        for (const ref of refs) {
-          if (!ref.trackId) continue;
-          const items = result.get(ref.trackId) ?? [];
-          items.push({ sourceId: interRound.id, label: `${game.title}: ${interRound.title}`, role: ref.role });
-          result.set(ref.trackId, items);
-        }
-      }
-    }
-    return result;
-  }, [games, songs]);
+  const usageBySongId = useMemo(() => buildSongUsageMap(games), [games]);
+  const trackUsage = useMemo(() => buildMediaTrackUsageMap(games, songs), [games, songs]);
 
   const filteredSongs = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const normalized = normalizeSearchText(query);
     if (!normalized) return songs;
-    return songs.filter((song) => `${song.artist} ${song.title}`.toLowerCase().includes(normalized));
+    return songs.filter((song) => normalizeSearchText(`${song.artist} ${song.title}`).includes(normalized));
   }, [query, songs]);
 
   const filteredTracks = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const normalized = normalizeSearchText(query);
     if (!normalized) return mediaTracks;
     return mediaTracks.filter((track) => {
       const asset = audioById.get(track.audioId);
-      return `${track.name} ${asset?.name ?? ''}`.toLowerCase().includes(normalized);
+      return normalizeSearchText(`${track.name} ${asset?.name ?? ''}`).includes(normalized);
     });
   }, [audioById, mediaTracks, query]);
 
@@ -96,7 +77,7 @@ export function MediaLibrary() {
       const result = await exportLibraryPackage(songs, persistedState.mediaTracks, persistedState.audioAssets);
       downloadBlob(result.blob, result.filename);
     } catch (error) {
-      window.alert(errorMessage(error, 'Не удалось экспортировать медиатеку.'));
+      window.alert(getErrorMessage(error, 'Не удалось экспортировать медиатеку.'));
     } finally {
       setBusy(null);
     }
@@ -111,7 +92,7 @@ export function MediaLibrary() {
       const preview = await prepareMediaMerge(packageData, songs, mediaTracks, persistedState.audioAssets);
       setPendingImport({ packageData, preview });
     } catch (error) {
-      window.alert(errorMessage(error, 'Не удалось импортировать медиатеку.'));
+      window.alert(getErrorMessage(error, 'Не удалось импортировать медиатеку.'));
     } finally {
       setBusy(null);
       if (importInputRef.current) importInputRef.current.value = '';
@@ -131,7 +112,7 @@ export function MediaLibrary() {
       await persistedStateImportFx(finalizeLibraryImport(latestPrepared, persistedState));
       setPendingImport(null);
     } catch (error) {
-      window.alert(errorMessage(error, 'Не удалось сохранить импортированную медиатеку.'));
+      window.alert(getErrorMessage(error, 'Не удалось сохранить импортированную медиатеку.'));
     } finally {
       setBusy(null);
     }
@@ -233,7 +214,7 @@ function SongList({
   mediaTracks: MediaTrack[];
   trackById: Map<string, MediaTrack>;
   audioById: Map<string, AudioAsset>;
-  usageBySongId: Map<string, Array<{ gameId: string; title: string; count: number }>>;
+  usageBySongId: Map<string, SongUsage[]>;
   query: string;
   onClearQuery: () => void;
 }) {
@@ -265,12 +246,14 @@ function SongList({
                 {usages.length === 0 ? <span>Не используется в играх</span> : <span title={usages.map((usage) => `${usage.title}: ${usage.count}`).join('\n')}>Используется: {usages.map((usage) => usage.title).join(', ')}</span>}
               </div>
               <div className="media-song-card__footer-actions">
-                <button className="secondary-button" onClick={() => songDuplicated(song.id)}>Создать отдельную копию</button>
-                <button className="danger-ghost" title="Удалить песню" onClick={() => {
-                  const usageCount = usages.reduce((total, usage) => total + usage.count, 0);
-                  const usageWarning = usageCount > 0 ? `\n\nПесня назначена ${usageCount} вопросам. Она будет автоматически снята с этих вопросов.` : '';
-                  if (window.confirm(`Удалить «${song.artist} — ${song.title}» из медиатеки?${usageWarning}\n\nСвязанные аудиотреки останутся в разделе «Аудио».`)) songDeleteRequested(song.id);
-                }}>Удалить песню</button>
+                <ActionMenu label={`Дополнительные действия для ${song.artist || 'исполнителя не указано'} — ${song.title || 'песни без названия'}`}>
+                  <button onClick={() => songDuplicated(song.id)}>Создать отдельную копию</button>
+                  <button className="action-menu__danger" onClick={() => {
+                    const usageCount = usages.reduce((total, usage) => total + usage.count, 0);
+                    const usageWarning = usageCount > 0 ? `\n\nПесня назначена ${usageCount} вопросам. Она будет автоматически снята с этих вопросов.` : '';
+                    if (window.confirm(`Удалить «${song.artist} — ${song.title}» из медиатеки?${usageWarning}\n\nСвязанные аудиотреки останутся в разделе «Аудио».`)) songDeleteRequested(song.id);
+                  }}>Удалить песню</button>
+                </ActionMenu>
               </div>
             </div>
           </article>
@@ -284,7 +267,7 @@ function TrackList({ tracks, allTracksCount, audioById, usageByTrackId, query, o
   tracks: MediaTrack[];
   allTracksCount: number;
   audioById: Map<string, AudioAsset>;
-  usageByTrackId: Map<string, Array<{ sourceId: string; label: string; role: string }>>;
+  usageByTrackId: Map<string, MediaTrackUsage[]>;
   query: string;
   onClearQuery: () => void;
 }) {
@@ -313,14 +296,14 @@ function TrackList({ tracks, allTracksCount, audioById, usageByTrackId, query, o
               <div className="media-song-card__footer-actions">
                 <label className="secondary-button file-button" title="Заменить физический файл, сохранив этот медиатрек и все ссылки на него">
                   Заменить файл
-                  <input type="file" accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4" onChange={(event) => {
+                  <input type="file" accept={AUDIO_FILE_ACCEPT} onChange={(event) => {
                     const file = event.target.files?.[0];
                     event.currentTarget.value = '';
                     if (!file) return;
                     if (usages.length > 0 && !window.confirm(`Аудиотрек «${track.name}» используется в ${usages.length} местах. Заменить файл во всех этих местах?`)) return;
                     void createAudioAsset(file)
                       .then((audioAsset) => mediaTrackAudioChanged({ trackId: track.id, audioAsset }))
-                      .catch((replaceError) => window.alert(errorMessage(replaceError, 'Не удалось заменить аудиофайл.')));
+                      .catch((replaceError) => window.alert(getErrorMessage(replaceError, 'Не удалось заменить аудиофайл.')));
                   }} />
                 </label>
                 <button
@@ -382,7 +365,7 @@ function StoredTrackField({ songId, kind, label, suggestedName, track, asset, tr
       <div className="inline-actions">
         <label className="secondary-button file-button">
           {busy ? 'Проверяем…' : track ? 'Загрузить другой файл' : 'Загрузить новый'}
-          <input type="file" disabled={busy} accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4" onChange={(event) => { const file = event.target.files?.[0]; if (file) void replaceFile(file); event.currentTarget.value = ''; }} />
+          <input type="file" disabled={busy} accept={AUDIO_FILE_ACCEPT} onChange={(event) => { const file = event.target.files?.[0]; if (file) void replaceFile(file); event.currentTarget.value = ''; }} />
         </label>
         {track && <button className="text-button" disabled={busy} onClick={() => {
           if (usedInGames && !window.confirm(`Убрать ${label.toLowerCase()} из этой песни? Игра не запустится, пока трек не будет назначен снова. Сам аудиотрек останется в медиатеке.`)) return;
@@ -412,7 +395,7 @@ function AudioTrackForm({ onCreated }: { onCreated: () => void }) {
       setFile(undefined);
       onCreated();
     } catch (submitError) {
-      setError(errorMessage(submitError, 'Не удалось добавить аудиотрек.'));
+      setError(getErrorMessage(submitError, 'Не удалось добавить аудиотрек.'));
     } finally {
       setBusy(false);
     }
@@ -422,7 +405,7 @@ function AudioTrackForm({ onCreated }: { onCreated: () => void }) {
     <div className="song-form">
       <div className="song-form-grid media-track-create-grid">
         <label className="field"><span>Название в медиатеке</span><input maxLength={DATA_LIMITS.text.mediaTrackName} value={name} onChange={(event) => setName(event.target.value)} placeholder="Можно оставить пустым — возьмём имя файла" /></label>
-        <div className="audio-upload"><span>Аудиофайл</span><label className={file ? 'file-picker file-picker--ready' : 'file-picker'}><input type="file" accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4" onChange={(event) => { setFile(event.target.files?.[0]); event.currentTarget.value = ''; }} /><span className="file-picker__title">{file ? '✓ Выбран' : 'Загрузить'}</span><small title={file?.name}>{file?.name ?? 'MP3, WAV, OGG, FLAC, M4A…'}</small></label></div>
+        <div className="audio-upload"><span>Аудиофайл</span><label className={file ? 'file-picker file-picker--ready' : 'file-picker'}><input type="file" accept={AUDIO_FILE_ACCEPT} onChange={(event) => { setFile(event.target.files?.[0]); event.currentTarget.value = ''; }} /><span className="file-picker__title">{file ? '✓ Выбран' : 'Загрузить'}</span><small title={file?.name}>{file?.name ?? 'MP3, WAV, OGG, FLAC, M4A…'}</small></label></div>
       </div>
       {error && <p className="missing-audio" role="alert">{error}</p>}
       <div className="inline-actions"><button className="primary-button" disabled={!file || busy} onClick={() => void submit()}>{busy ? 'Проверяем аудио…' : 'Добавить аудио'}</button></div>
@@ -431,38 +414,33 @@ function AudioTrackForm({ onCreated }: { onCreated: () => void }) {
 }
 
 function LibraryImportDialog({ prepared, onCancel, onImport }: { prepared: PreparedMediaMerge; onCancel: () => void; onImport: () => void }) {
-  useEscapeClose(onCancel);
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onCancel(); }}>
-      <section className="import-dialog" role="dialog" aria-modal="true" aria-label="Импорт медиатеки">
-        <div className="import-dialog__header"><div><span className="eyebrow">Проверка завершена</span><h2>Импорт медиатеки</h2></div><button className="icon-button" onClick={onCancel}>×</button></div>
-        <LibraryImportSummary stats={prepared.stats} />
-        <p className="import-note">Существующие песни, медиатреки и физические аудиофайлы переиспользуются автоматически.</p>
-        <div className="import-dialog__actions"><button className="primary-button" onClick={onImport}>Добавить в медиатеку</button><button className="secondary-button" onClick={onCancel}>Отмена</button></div>
-      </section>
-    </div>
-  );
-}
-
-function LibraryImportSummary({ stats }: { stats: PreparedMediaMerge['stats'] }) {
-  const songsTotal = stats.newSongs + stats.reusedSongs + stats.deduplicatedSongs;
-  const tracksTotal = stats.newTracks + stats.reusedTracks + stats.deduplicatedTracks;
-  const audioTotal = stats.newAudio + stats.reusedAudio;
-  return (
-    <div className="import-verification">
-      <div className="import-verification__status"><span className="import-verification__icon" aria-hidden="true">✓</span><div><strong>Медиатека готова к импорту</strong><ul className="import-check-list"><li>Архив не повреждён</li><li>Связи песен и аудиотреков проверены</li><li>Все вложенные аудиофайлы доступны</li></ul></div></div>
-      <div className="import-verification__content"><strong className="import-section-title">Что будет добавлено</strong><div className="import-summary-grid import-summary-grid--three">
-        <div className="import-summary-card"><span>Песни</span><strong>{songsTotal} всего</strong><small>{stats.reusedSongs} уже есть · {stats.newSongs} новых{stats.deduplicatedSongs ? ` · ${stats.deduplicatedSongs} дублей внутри архива` : ''}</small></div>
-        <div className="import-summary-card"><span>Аудиотреки</span><strong>{tracksTotal} всего</strong><small>{stats.reusedTracks} уже есть · {stats.newTracks} новых{stats.deduplicatedTracks ? ` · ${stats.deduplicatedTracks} дублей внутри архива` : ''}</small></div>
-        <div className="import-summary-card"><span>Физические файлы</span><strong>{audioTotal} всего</strong><small>{stats.reusedAudio} уже есть · {stats.newAudio} новых{stats.internalAudioReuses ? ` · ${stats.internalAudioReuses} внутренних переиспользований` : ''}</small></div>
-      </div></div>
-    </div>
+    <Dialog
+      eyebrow="Проверка завершена"
+      title="Импорт медиатеки"
+      onClose={onCancel}
+      className="import-dialog"
+    >
+      <ImportVerificationSummary
+        title="Медиатека готова к импорту"
+        stats={prepared.stats}
+        checks={[
+          'Архив не повреждён',
+          'Связи песен и аудиотреков проверены',
+          'Все вложенные аудиофайлы доступны',
+        ]}
+        sectionTitle="Что будет добавлено"
+      />
+      <div className="import-dialog__actions">
+        <button className="primary-button" onClick={onImport}>Добавить в медиатеку</button>
+        <button className="secondary-button" onClick={onCancel}>Отмена</button>
+      </div>
+    </Dialog>
   );
 }
 
 function AudioPreview({ asset }: { asset: AudioAsset }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => { const url = URL.createObjectURL(asset.blob); setSource(url); return () => URL.revokeObjectURL(url); }, [asset]);
+  const source = useObjectUrl(asset.blob);
   return source ? <audio className="media-audio-preview" src={source} controls preload="metadata" /> : null;
 }
 
@@ -470,26 +448,8 @@ function NoResults({ onClear }: { onClear: () => void }) {
   return <div className="empty-state"><h2>Ничего не найдено</h2><p>Попробуйте изменить запрос или очистить строку поиска.</p><button className="secondary-button" onClick={onClear}>Очистить поиск</button></div>;
 }
 
-function buildSongUsage(games: GameConfig[]) {
-  const result = new Map<string, Array<{ gameId: string; title: string; count: number }>>();
-  for (const game of games) {
-    const counts = new Map<string, number>();
-    for (const round of game.rounds) for (const category of round.categories) for (const question of category.questions) if (question.songId) counts.set(question.songId, (counts.get(question.songId) ?? 0) + 1);
-    for (const [songId, count] of counts) { const entries = result.get(songId) ?? []; entries.push({ gameId: game.id, title: game.title, count }); result.set(songId, entries); }
-  }
-  return result;
-}
 
 function songTrackLabel(song: Song, role: 'минус' | 'плюс') {
   const songLabel = [song.artist.trim(), song.title.trim()].filter(Boolean).join(' — ');
   return songLabel ? `${songLabel} (${role})` : '';
 }
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} КБ`;
-  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} МБ`;
-  return `${(bytes / 1024 ** 3).toFixed(2)} ГБ`;
-}
-
-function errorMessage(error: unknown, fallback: string) { return error instanceof Error ? error.message : fallback; }

@@ -1,0 +1,442 @@
+import { combine, createEvent, sample } from 'effector';
+import { createSession } from '../defaults';
+import {
+  findQuestion,
+  getActiveStage,
+  getInterRoundForStage,
+  getRoundForStage,
+  getRoundOrdinal,
+  isRoundComplete,
+} from '../session';
+import { getInterRoundAnswerStepCount } from '../../interRounds/templates';
+import { $audioAssets, $games, $mediaTracks, $sessions, $songs } from '../core/state';
+import { $activeGame, $session } from './selectors';
+import type { AudioAsset, MediaTrack, PlayableQuestion, Question, Song } from '../types';
+
+export const gameProgressResetRequested = createEvent();
+export const questionOpened = createEvent<string>();
+export const questionClosed = createEvent<{ completed: boolean }>();
+export const teamAwarded = createEvent<string>();
+export const teamIncorrectToggled = createEvent<string>();
+export const nobodyGuessed = createEvent();
+export const teamScoreChanged = createEvent<{ teamId: string; score: number }>();
+export const nextStageRequested = createEvent();
+export const interRoundStarted = createEvent();
+export const interRoundAnswerRevealed = createEvent();
+export const commonThemeTrackAdvanced = createEvent();
+export const interRoundNextRequested = createEvent();
+
+export const gameSessionResetRequested = createEvent<string>();
+
+sample({
+  clock: gameProgressResetRequested,
+  source: $activeGame,
+  filter: (game) => Boolean(game),
+  fn: (game) => game!.id,
+  target: gameSessionResetRequested,
+});
+
+sample({
+  clock: gameSessionResetRequested,
+  source: combine({ games: $games, sessions: $sessions }),
+  filter: ({ games }, gameId) => games.some((game) => game.id === gameId),
+  fn: ({ games, sessions }, gameId) => {
+    const game = games.find((item) => item.id === gameId)!;
+    return { ...sessions, [gameId]: createSession(game) };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: questionOpened,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }, questionId) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    if (!session) return false;
+    const round = getRoundForStage(game, getActiveStage(game, session));
+    return Boolean(
+      round?.categories.some((category) =>
+        category.questions.some((question) => question.id === questionId),
+      ) && !session.completedQuestionIds.includes(questionId),
+    );
+  },
+  fn: ({ game, sessions }, questionId) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        started: true,
+        activeQuestionId: questionId,
+        awardedTeamId: null,
+        answerRevealed: false,
+        activeExcludedTeamIds: unique(session.nextExcludedTeamIds),
+        currentIncorrectTeamIds: [],
+        nextExcludedTeamIds: [],
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: questionClosed,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]),
+  fn: ({ game, sessions }, { completed }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        activeQuestionId: null,
+        awardedTeamId: null,
+        answerRevealed: false,
+        activeExcludedTeamIds: [],
+        currentIncorrectTeamIds: [],
+        nextExcludedTeamIds: completed
+          ? session.nextExcludedTeamIds
+          : unique(session.activeExcludedTeamIds),
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: teamAwarded,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }, teamId) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    return Boolean(
+      session?.activeQuestionId
+      && game.teams.some((team) => team.id === teamId)
+      && !session.answerRevealed
+      && !session.activeExcludedTeamIds.includes(teamId)
+      && !session.currentIncorrectTeamIds.includes(teamId)
+      && !session.completedQuestionIds.includes(session.activeQuestionId),
+    );
+  },
+  fn: ({ game, sessions }, teamId) => {
+    const session = sessions[game!.id];
+    const question = findQuestion(game!, session.activeQuestionId!);
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        awardedTeamId: teamId,
+        answerRevealed: true,
+        completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId!]),
+        scores: {
+          ...session.scores,
+          [teamId]: (session.scores[teamId] ?? 0) + (question?.points ?? 0),
+        },
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: teamIncorrectToggled,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }, teamId) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    return Boolean(
+      session?.activeQuestionId
+      && game.teams.some((team) => team.id === teamId)
+      && !session.answerRevealed
+      && !session.activeExcludedTeamIds.includes(teamId),
+    );
+  },
+  fn: ({ game, sessions }, teamId) => {
+    const session = sessions[game!.id];
+    const isIncorrect = session.currentIncorrectTeamIds.includes(teamId);
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        currentIncorrectTeamIds: isIncorrect
+          ? session.currentIncorrectTeamIds.filter((id) => id !== teamId)
+          : unique([...session.currentIncorrectTeamIds, teamId]),
+        nextExcludedTeamIds: isIncorrect
+          ? session.nextExcludedTeamIds.filter((id) => id !== teamId)
+          : unique([...session.nextExcludedTeamIds, teamId]),
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: nobodyGuessed,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    return Boolean(
+      session?.activeQuestionId
+      && !session.answerRevealed
+      && !session.completedQuestionIds.includes(session.activeQuestionId),
+    );
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        awardedTeamId: null,
+        answerRevealed: true,
+        completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId!]),
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: teamScoreChanged,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }, { teamId, score }) => Boolean(
+    game
+    && sessions[game.id]
+    && game.teams.some((team) => team.id === teamId)
+    && Number.isSafeInteger(score),
+  ),
+  fn: ({ game, sessions }, { teamId, score }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        scores: { ...session.scores, [teamId]: score },
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: nextStageRequested,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    if (!session || session.stageIndex >= game.stages.length) return false;
+    const stage = getActiveStage(game, session);
+    return stage?.kind === 'round' ? isRoundComplete(game, session) : false;
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
+        activeQuestionId: null,
+        interRound: null,
+        awardedTeamId: null,
+        answerRevealed: false,
+        activeExcludedTeamIds: [],
+        currentIncorrectTeamIds: [],
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundStarted,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    return Boolean(session && getActiveStage(game, session)?.kind === 'interRound');
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    const interRound = getInterRoundForStage(game!, getActiveStage(game!, session));
+    if (!interRound) return sessions;
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        started: true,
+        interRound: {
+          interRoundId: interRound.id,
+          phase: 'play' as const,
+          taskIndex: 0,
+          trackIndex: 0,
+        },
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: commonThemeTrackAdvanced,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    const interRound = session
+      ? getInterRoundForStage(game, getActiveStage(game, session))
+      : null;
+    return Boolean(
+      session?.interRound?.phase === 'play'
+      && interRound?.templateId === 'commonTheme4'
+      && session.interRound.taskIndex < interRound.stages.length
+      && session.interRound.trackIndex < 4,
+    );
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        interRound: session.interRound
+          ? { ...session.interRound, trackIndex: Math.min(session.interRound.trackIndex + 1, 4) }
+          : null,
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundAnswerRevealed,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    if (session?.interRound?.phase !== 'play') return false;
+    const interRound = getInterRoundForStage(game, getActiveStage(game, session));
+    return interRound?.templateId === 'commonTheme4'
+      ? session.interRound.trackIndex >= 4
+      : Boolean(interRound);
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        interRound: session.interRound
+          ? { ...session.interRound, phase: 'answer' as const }
+          : null,
+      },
+    };
+  },
+  target: $sessions,
+});
+
+sample({
+  clock: interRoundNextRequested,
+  source: combine({ game: $activeGame, sessions: $sessions }),
+  filter: ({ game, sessions }) => {
+    if (!game) return false;
+    const session = sessions[game.id];
+    const interRound = session
+      ? getInterRoundForStage(game, getActiveStage(game, session))
+      : null;
+    return Boolean(session?.interRound?.phase === 'answer' && interRound);
+  },
+  fn: ({ game, sessions }) => {
+    const session = sessions[game!.id];
+    const interRound = getInterRoundForStage(game!, getActiveStage(game!, session))!;
+    const taskCount = getInterRoundAnswerStepCount(interRound);
+    const nextTaskIndex = (session.interRound?.taskIndex ?? 0) + 1;
+    if (nextTaskIndex < taskCount) {
+      return {
+        ...sessions,
+        [game!.id]: {
+          ...session,
+          interRound: {
+            interRoundId: interRound.id,
+            phase: 'play' as const,
+            taskIndex: nextTaskIndex,
+            trackIndex: 0,
+          },
+        },
+      };
+    }
+    return {
+      ...sessions,
+      [game!.id]: {
+        ...session,
+        stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
+        completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
+        interRound: null,
+      },
+    };
+  },
+  target: $sessions,
+});
+
+export const $activeStage = combine($activeGame, $session, (game, session) =>
+  game && session ? getActiveStage(game, session) : null,
+);
+
+export const $activeRound = combine($activeGame, $activeStage, (game, stage) =>
+  game ? getRoundForStage(game, stage) : null,
+);
+
+export const $activeInterRound = combine($activeGame, $activeStage, (game, stage) =>
+  game ? getInterRoundForStage(game, stage) : null,
+);
+
+export const $activeRoundOrdinal = combine($activeGame, $session, (game, session) =>
+  game && session ? getRoundOrdinal(game, session.stageIndex) : 1,
+);
+
+export const $activeQuestion = combine(
+  {
+    game: $activeGame,
+    session: $session,
+    songs: $songs,
+    mediaTracks: $mediaTracks,
+    audioAssets: $audioAssets,
+  },
+  ({ game, session, songs, mediaTracks, audioAssets }): PlayableQuestion | null => {
+    if (!game || !session?.activeQuestionId) return null;
+    const question = findQuestion(game, session.activeQuestionId);
+    return question ? resolveQuestion(question, songs, mediaTracks, audioAssets) : null;
+  },
+);
+
+export const $isGameFinished = combine($activeGame, $session, (game, session) =>
+  Boolean(game && session && session.stageIndex >= game.stages.length),
+);
+
+function resolveQuestion(
+  question: Question,
+  songs: Song[],
+  mediaTracks: MediaTrack[],
+  audioAssets: AudioAsset[],
+): PlayableQuestion {
+  const song = question.songId ? songs.find((item) => item.id === question.songId) : undefined;
+  const minusTrack = song?.minusTrackId
+    ? mediaTracks.find((track) => track.id === song.minusTrackId)
+    : undefined;
+  const plusTrack = song?.plusTrackId
+    ? mediaTracks.find((track) => track.id === song.plusTrackId)
+    : undefined;
+  return {
+    ...question,
+    song,
+    minusTrack,
+    plusTrack,
+    minus: minusTrack ? audioAssets.find((asset) => asset.id === minusTrack.audioId) : undefined,
+    plus: plusTrack ? audioAssets.find((asset) => asset.id === plusTrack.audioId) : undefined,
+  };
+}
+
+function unique(values: string[]) {
+  return [...new Set(values)];
+}

@@ -4,6 +4,8 @@ import { createAudioAsset, createMediaTrack, createSong } from '../model/default
 import { DATA_LIMITS } from '../model/limits';
 import { $mediaTracks, songAdded } from '../model/game';
 import type { AudioAsset, MediaTrack } from '../model/types';
+import { AUDIO_FILE_ACCEPT } from '../lib/audio';
+import { getErrorMessage } from '../lib/errors';
 
 export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?: (songId: string) => void; onCancel?: () => void; compact?: boolean }) {
   const mediaTracks = useUnit($mediaTracks);
@@ -53,7 +55,7 @@ export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?:
       setMinusTrackId('');
       setPlusTrackId('');
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : 'Не удалось добавить песню.');
+      setError(getErrorMessage(submitError, 'Не удалось добавить песню.'));
     } finally {
       setBusy(false);
     }
@@ -64,7 +66,7 @@ export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?:
       <div className="song-form-grid">
         <label className="field">
           <span>Исполнитель</span>
-          <input maxLength={DATA_LIMITS.text.artist} value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Например: Кино" />
+          <input autoFocus={compact} maxLength={DATA_LIMITS.text.artist} value={artist} onChange={(event) => setArtist(event.target.value)} placeholder="Например: Кино" />
         </label>
         <label className="field">
           <span>Название песни</span>
@@ -121,7 +123,7 @@ function TrackField({
       <label className={file ? 'file-picker file-picker--ready' : 'file-picker'}>
         <input
           type="file"
-          accept="audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4"
+          accept={AUDIO_FILE_ACCEPT}
           onChange={(event) => {
             onFileChange(event.target.files?.[0]);
             event.currentTarget.value = '';

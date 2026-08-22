@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function DraftNumberInput({
   value,
@@ -17,6 +17,7 @@ export function DraftNumberInput({
 }) {
   const [draft, setDraft] = useState(String(value));
   const [focused, setFocused] = useState(false);
+  const skipNextBlurCommit = useRef(false);
 
   useEffect(() => {
     if (!focused) setDraft(String(value));
@@ -28,9 +29,10 @@ export function DraftNumberInput({
       setDraft(String(value));
       return;
     }
+
     const next = Math.min(max ?? Infinity, Math.max(min ?? -Infinity, Math.trunc(parsed)));
     setDraft(String(next));
-    onCommit(next);
+    if (next !== value) onCommit(next);
   };
 
   return (
@@ -48,18 +50,20 @@ export function DraftNumberInput({
         const next = event.target.value;
         if (!/^-?\d*$/.test(next)) return;
         setDraft(next);
-        if (next !== '' && next !== '-') {
-          const parsed = Number(next);
-          if (Number.isFinite(parsed)) onCommit(Math.min(max ?? Infinity, Math.max(min ?? -Infinity, Math.trunc(parsed))));
-        }
       }}
       onBlur={() => {
         setFocused(false);
+        if (skipNextBlurCommit.current) {
+          skipNextBlurCommit.current = false;
+          setDraft(String(value));
+          return;
+        }
         commit();
       }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') event.currentTarget.blur();
         if (event.key === 'Escape') {
+          skipNextBlurCommit.current = true;
           setDraft(String(value));
           event.currentTarget.blur();
         }

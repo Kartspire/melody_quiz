@@ -1,5 +1,13 @@
-import { DATA_LIMITS, GAME_LIMITS } from './limits';
+import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from './limits';
 import { getInterRoundTrackIds } from '../interRounds/templates';
+import {
+  isPersistableTeamName,
+  isValidContinueLyricsCutAtMs,
+  isValidContinueLyricsRequiredWordsCount,
+  isValidQuestionPoints,
+  isValidTeamColor,
+  normalizeRuleText,
+} from './rules';
 import type {
   AudioAsset,
   GameConfig,
@@ -12,8 +20,6 @@ import type {
 
 const MIN_DATE = Date.UTC(2000, 0, 1);
 const MAX_DATE = Date.UTC(2100, 0, 1);
-const MAX_CUT_AT_MS = 6 * 60 * 60 * 1000;
-const MAX_REQUIRED_WORDS = 100;
 
 export function assertValidGameStructure(game: GameConfig): void {
   const issues = getGameStructureIssues(game);
@@ -21,14 +27,17 @@ export function assertValidGameStructure(game: GameConfig): void {
 }
 
 export function getGameStructureIssues(config: GameConfig): string[] {
-  return collectGameIssues(config, true);
+  return collectGameIssues(config, 'playable');
 }
 
 export function getGameStorageIssues(config: GameConfig): string[] {
-  return collectGameIssues(config, false);
+  return collectGameIssues(config, 'draft');
 }
 
-function collectGameIssues(config: GameConfig, strict: boolean): string[] {
+type GameValidationMode = 'draft' | 'playable';
+
+function collectGameIssues(config: GameConfig, mode: GameValidationMode): string[] {
+  const requiresPlayable = mode === 'playable';
   const issues: string[] = [];
   const ids = new Set<string>();
   const takeId = (id: unknown, label: string) => {
@@ -42,7 +51,7 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
 
   if (!config || typeof config !== 'object') return ['Игра отсутствует или имеет неверный формат.'];
   takeId(config.id, 'Игра');
-  if (!isBoundedText(config.title, DATA_LIMITS.text.gameTitle) || (strict && !config.title.trim())) issues.push('Не задано корректное название игры.');
+  if (!isBoundedText(config.title, DATA_LIMITS.text.gameTitle) || (requiresPlayable && !config.title.trim())) issues.push('Не задано корректное название игры.');
   if (!isValidTimestamp(config.createdAt) || !isValidTimestamp(config.updatedAt)) issues.push('Некорректная дата создания или изменения игры.');
 
   if (!Array.isArray(config.rounds) || config.rounds.length < 1 || config.rounds.length > GAME_LIMITS.rounds) {
@@ -66,22 +75,22 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
   const teamColors = new Set<string>();
   config.teams.forEach((team, teamIndex) => {
     takeId(team?.id, `Команда ${teamIndex + 1}`);
-    if (!isBoundedText(team?.name, DATA_LIMITS.text.teamName) || (strict && !team.name.trim())) {
+    if (!isPersistableTeamName(team?.name) || (requiresPlayable && !team.name.trim())) {
       issues.push(`Команда ${teamIndex + 1}: не задано корректное название.`);
-    } else if (strict) {
-      const normalized = normalizeText(team.name);
+    } else if (requiresPlayable) {
+      const normalized = normalizeRuleText(team.name);
       if (teamNames.has(normalized)) issues.push(`Команда ${teamIndex + 1}: название «${team.name.trim()}» уже используется.`);
       teamNames.add(normalized);
     }
     const color = typeof team?.color === 'string' ? team.color.toLowerCase() : '';
-    if (!/^#[0-9a-f]{6}$/.test(color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
-    else if (strict && teamColors.has(color)) issues.push(`Команда ${teamIndex + 1}: этот цвет уже используется другой командой.`);
+    if (!isValidTeamColor(color)) issues.push(`Команда ${teamIndex + 1}: задан некорректный цвет.`);
+    else if (requiresPlayable && teamColors.has(color)) issues.push(`Команда ${teamIndex + 1}: этот цвет уже используется другой командой.`);
     if (color) teamColors.add(color);
   });
 
   config.rounds.forEach((round, roundIndex) => {
     takeId(round?.id, `Раунд ${roundIndex + 1}`);
-    if (!isBoundedText(round?.name, DATA_LIMITS.text.roundName) || (strict && !round.name.trim())) issues.push(`Раунд ${roundIndex + 1}: не задано корректное название.`);
+    if (!isBoundedText(round?.name, DATA_LIMITS.text.roundName) || (requiresPlayable && !round.name.trim())) issues.push(`Раунд ${roundIndex + 1}: не задано корректное название.`);
     if (!Array.isArray(round?.categories) || round.categories.length < 1 || round.categories.length > GAME_LIMITS.categoriesPerRound) {
       issues.push(`Раунд ${roundIndex + 1}: должно быть от 1 до ${GAME_LIMITS.categoriesPerRound} категорий.`);
       return;
@@ -89,7 +98,7 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
 
     round.categories.forEach((category, categoryIndex) => {
       takeId(category?.id, `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}`);
-      if (!isBoundedText(category?.name, DATA_LIMITS.text.categoryName) || (strict && !category.name.trim())) {
+      if (!isBoundedText(category?.name, DATA_LIMITS.text.categoryName) || (requiresPlayable && !category.name.trim())) {
         issues.push(`Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}: не задано корректное название.`);
       }
       if (!Array.isArray(category?.questions) || category.questions.length < 1 || category.questions.length > GAME_LIMITS.questionsPerCategory) {
@@ -101,9 +110,9 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
       category.questions.forEach((question, questionIndex) => {
         const prefix = `Раунд ${roundIndex + 1}, категория ${categoryIndex + 1}, вопрос ${questionIndex + 1}`;
         takeId(question?.id, prefix);
-        if (!Number.isSafeInteger(question?.points) || question.points <= 0 || question.points > DATA_LIMITS.maxQuestionPoints) {
+        if (!isValidQuestionPoints(question?.points)) {
           issues.push(`${prefix}: стоимость должна быть целым числом от 1 до ${DATA_LIMITS.maxQuestionPoints}.`);
-        } else if (strict && usedPoints.has(question.points)) {
+        } else if (requiresPlayable && usedPoints.has(question.points)) {
           issues.push(`${prefix}: стоимость ${question.points} уже используется в этой категории.`);
         } else {
           usedPoints.add(question.points);
@@ -113,7 +122,7 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
     });
   });
 
-  config.interRounds.forEach((interRound, index) => validateInterRound(interRound, index, strict, takeId, issues));
+  config.interRounds.forEach((interRound, index) => validateInterRound(interRound, index, mode, takeId, issues));
 
   const roundIds = new Set(config.rounds.map((round) => round.id));
   const interRoundIds = new Set(config.interRounds.map((interRound) => interRound.id));
@@ -141,13 +150,14 @@ function collectGameIssues(config: GameConfig, strict: boolean): string[] {
 function validateInterRound(
   interRound: InterRound,
   index: number,
-  strict: boolean,
+  mode: GameValidationMode,
   takeId: (id: unknown, label: string) => void,
   issues: string[],
 ) {
+  const requiresPlayable = mode === 'playable';
   const prefix = `Межраунд ${index + 1}`;
   takeId(interRound?.id, prefix);
-  if (!isBoundedText(interRound?.title, DATA_LIMITS.text.interRoundTitle) || (strict && !interRound.title.trim())) issues.push(`${prefix}: не задано корректное название.`);
+  if (!isBoundedText(interRound?.title, DATA_LIMITS.text.interRoundTitle) || (requiresPlayable && !interRound.title.trim())) issues.push(`${prefix}: не задано корректное название.`);
   if (interRound?.templateId === 'continueLyrics' && interRound.templateVersion !== 1) issues.push(`${prefix}: версия шаблона не поддерживается.`);
   if (interRound?.templateId === 'commonTheme4' && interRound.templateVersion !== 2) issues.push(`${prefix}: версия шаблона не поддерживается.`);
 
@@ -160,10 +170,10 @@ function validateInterRound(
       const taskPrefix = `${prefix}, задание ${taskIndex + 1}`;
       takeId(task?.id, taskPrefix);
       if (task.trackId !== undefined && (!isBoundedText(task.trackId, DATA_LIMITS.text.id) || !task.trackId)) issues.push(`${taskPrefix}: некорректная ссылка на аудиотрек.`);
-      if (strict && !task.trackId) issues.push(`${taskPrefix}: не выбран аудиотрек.`);
-      if (!Number.isSafeInteger(task.requiredWordsCount) || task.requiredWordsCount < 1 || task.requiredWordsCount > MAX_REQUIRED_WORDS) issues.push(`${taskPrefix}: количество слов должно быть от 1 до ${MAX_REQUIRED_WORDS}.`);
-      if (!Number.isSafeInteger(task.cutAtMs) || task.cutAtMs < 500 || task.cutAtMs > MAX_CUT_AT_MS) issues.push(`${taskPrefix}: время остановки должно быть от 0,5 секунды до 6 часов.`);
-      if (!isBoundedText(task.answerText, DATA_LIMITS.text.interRoundAnswer) || (strict && !task.answerText.trim())) issues.push(`${taskPrefix}: не указан правильный текст ответа.`);
+      if (requiresPlayable && !task.trackId) issues.push(`${taskPrefix}: не выбран аудиотрек.`);
+      if (!isValidContinueLyricsRequiredWordsCount(task.requiredWordsCount)) issues.push(`${taskPrefix}: количество слов должно быть от ${INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.min} до ${INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.max}.`);
+      if (!isValidContinueLyricsCutAtMs(task.cutAtMs)) issues.push(`${taskPrefix}: время остановки должно быть от 0,5 секунды до 6 часов.`);
+      if (!isBoundedText(task.answerText, DATA_LIMITS.text.interRoundAnswer) || (requiresPlayable && !task.answerText.trim())) issues.push(`${taskPrefix}: не указан правильный текст ответа.`);
     });
     return;
   }
@@ -184,11 +194,11 @@ function validateInterRound(
         const trackPrefix = `${stagePrefix}, трек ${trackIndex + 1}`;
         takeId(track?.id, trackPrefix);
         if (track.trackId !== undefined && (!isBoundedText(track.trackId, DATA_LIMITS.text.id) || !track.trackId)) issues.push(`${trackPrefix}: некорректная ссылка на аудиотрек.`);
-        if (strict && !track.trackId) issues.push(`${trackPrefix}: не выбран аудиотрек.`);
-        if (!isBoundedText(track.answerTitle, DATA_LIMITS.text.songTitle) || (strict && !track.answerTitle.trim())) issues.push(`${trackPrefix}: не указано название песни для ответа.`);
-        if (!isBoundedText(track.answerArtist, DATA_LIMITS.text.artist) || (strict && !track.answerArtist.trim())) issues.push(`${trackPrefix}: не указан исполнитель для ответа.`);
+        if (requiresPlayable && !track.trackId) issues.push(`${trackPrefix}: не выбран аудиотрек.`);
+        if (!isBoundedText(track.answerTitle, DATA_LIMITS.text.songTitle) || (requiresPlayable && !track.answerTitle.trim())) issues.push(`${trackPrefix}: не указано название песни для ответа.`);
+        if (!isBoundedText(track.answerArtist, DATA_LIMITS.text.artist) || (requiresPlayable && !track.answerArtist.trim())) issues.push(`${trackPrefix}: не указан исполнитель для ответа.`);
       });
-      if (!isBoundedText(stage.commonTheme, DATA_LIMITS.text.commonTheme) || (strict && !stage.commonTheme.trim())) issues.push(`${stagePrefix}: не указана общая тема.`);
+      if (!isBoundedText(stage.commonTheme, DATA_LIMITS.text.commonTheme) || (requiresPlayable && !stage.commonTheme.trim())) issues.push(`${stagePrefix}: не указана общая тема.`);
     });
     return;
   }
@@ -372,6 +382,3 @@ function hasPlayableTrack(trackId: string | undefined, trackById: Map<string, Me
   return Boolean(asset && asset.id === asset.sha256 && isSha256(asset.id) && asset.verified === true && asset.blob instanceof Blob && asset.blob.size > 0);
 }
 
-function normalizeText(value: string) {
-  return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU');
-}

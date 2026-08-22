@@ -11,14 +11,12 @@ import {
   $mediaTracks,
   $session,
   $songs,
-  gameRestarted,
-  getGameStartIssues,
+  gameLaunchRequested,
   isRoundComplete,
-  nextRoundRequested,
+  nextStageRequested,
   nobodyGuessed,
   questionClosed,
   questionOpened,
-  screenChanged,
   teamAwarded,
   teamIncorrectToggled,
 } from '../model/game';
@@ -61,15 +59,7 @@ export function GameBoard() {
             </div>
           ))}
         </div>
-        <button className="primary-button" onClick={() => {
-          const issues = getGameStartIssues(config, songs, mediaTracks, audioAssets);
-          if (issues.length > 0) {
-            window.alert('Игра изменилась и сейчас не готова к повторному запуску. Проверьте структуру и аудиофайлы в редакторе.');
-            screenChanged('admin');
-            return;
-          }
-          gameRestarted();
-        }}>Сыграть заново</button>
+        <button className="primary-button" onClick={() => gameLaunchRequested({ gameId: config.id, mode: 'restart' })}>Сыграть заново</button>
       </main>
     );
   }
@@ -94,7 +84,7 @@ export function GameBoard() {
           const completed = session.answerRevealed;
           const shouldAdvance = completed && isRoundComplete(config, session);
           questionClosed({ completed });
-          if (shouldAdvance) nextRoundRequested();
+          if (shouldAdvance) nextStageRequested();
         }}
       />
     );

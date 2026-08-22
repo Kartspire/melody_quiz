@@ -115,7 +115,7 @@ export const loadState = async (): Promise<PersistedState> => {
       lastSavedState = canonical.state;
 
       if (canonical.changed) {
-        await rewriteCanonicalState(canonical.state, true);
+        await rewriteCanonicalState(canonical.state);
         lastSavedState = canonical.state;
       }
       return canonical.state;
@@ -124,7 +124,7 @@ export const loadState = async (): Promise<PersistedState> => {
     const state = legacy?.config && legacy?.session ? await migrateLegacyState(legacy) : createInitialState();
     assertValidPersistedState(state);
     lastSavedState = null;
-    await rewriteCanonicalState(state, true);
+    await rewriteCanonicalState(state);
     await deleteLegacyState();
     lastSavedState = state;
     return state;
@@ -167,7 +167,7 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
   }
 }
 
-async function rewriteCanonicalState(state: PersistedState, allowCurrentRevision: boolean): Promise<void> {
+async function rewriteCanonicalState(state: PersistedState): Promise<void> {
   const db = await openDatabase();
   try {
     const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
@@ -179,11 +179,6 @@ async function rewriteCanonicalState(state: PersistedState, allowCurrentRevision
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
     const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
-    if (!allowCurrentRevision && actualRevision !== knownRevision) {
-      transaction.abort();
-      throw new StorageConflictError();
-    }
-
     gamesStore.clear();
     songsStore.clear();
     mediaTracksStore.clear();

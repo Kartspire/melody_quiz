@@ -11,6 +11,7 @@ import {
   interRoundStarted,
 } from '../model/game';
 import type { AudioAsset } from '../model/types';
+import { useObjectUrl } from '../hooks/useObjectUrl';
 import { getInterRoundTemplate } from './templates';
 
 export function InterRoundPlayer() {
@@ -305,16 +306,6 @@ function resolveTrack(trackId: string | undefined, trackById: Map<string, { audi
   return { asset: track ? audioById.get(track.audioId) : undefined };
 }
 
-function useObjectUrl(blob?: Blob) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) { setUrl(null); return; }
-    const next = URL.createObjectURL(blob);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [blob]);
-  return url;
-}
 
 function wordLabel(value: number) {
   const mod10 = value % 10;

@@ -8,6 +8,13 @@ export const GAME_LIMITS = {
   commonThemeStages: 50,
 } as const;
 
+export const INTER_ROUND_LIMITS = {
+  continueLyrics: {
+    requiredWordsCount: { min: 1, max: 100 },
+    cutAtMs: { min: 500, max: 6 * 60 * 60 * 1000 },
+  },
+} as const;
+
 export const DATA_LIMITS = {
   audioFileBytes: 512 * 1024 * 1024,
   packageBytes: 4 * 1024 * 1024 * 1024,

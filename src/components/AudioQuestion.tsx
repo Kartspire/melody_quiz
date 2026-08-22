@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PlayableQuestion, Team } from '../model/types';
+import { useObjectUrl } from '../hooks/useObjectUrl';
 
 export function AudioQuestion({
   question,
@@ -29,7 +30,6 @@ export function AudioQuestion({
   onClose: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [source, setSource] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -37,29 +37,15 @@ export function AudioQuestion({
   const plusMode = answerRevealed;
   const asset = plusMode ? question.plus : question.minus;
   const awardedTeam = teams.find((team) => team.id === awardedTeamId);
+  const invalidAsset = Boolean(asset && !(asset.blob instanceof Blob));
+  const source = useObjectUrl(invalidAsset ? undefined : asset?.blob);
 
   useEffect(() => {
     setPlaying(false);
     setProgress(0);
     setDuration(0);
-    setPlaybackError(null);
-
-    if (!asset) {
-      setSource(null);
-      return;
-    }
-
-    if (!(asset.blob instanceof Blob)) {
-      setSource(null);
-      setPlaybackError('Аудиофайл повреждён. Загрузите его заново в настройках.');
-      return;
-    }
-
-    const objectUrl = URL.createObjectURL(asset.blob);
-    setSource(objectUrl);
-
-    return () => URL.revokeObjectURL(objectUrl);
-  }, [asset]);
+    setPlaybackError(invalidAsset ? 'Аудиофайл повреждён. Загрузите его заново в настройках.' : null);
+  }, [asset, invalidAsset]);
 
   useEffect(() => {
     const audio = audioRef.current;

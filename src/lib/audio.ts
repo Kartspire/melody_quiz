@@ -2,6 +2,8 @@ import type { AudioAsset } from '../model/types';
 import { DATA_LIMITS } from '../model/limits';
 import { sha256Blob } from './contentHash';
 
+export const AUDIO_FILE_ACCEPT = 'audio/*,.mp3,.wav,.ogg,.opus,.flac,.m4a,.mp4';
+
 export async function createContentAddressedAudioAsset(file: File): Promise<AudioAsset> {
   await validateAudioBlob(file, file.name, file.type, true);
   const sha256 = await sha256Blob(file);

@@ -2,16 +2,14 @@ import { useMemo, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeGame,
-  $audioAssets,
-  $mediaTracks,
   $songs,
   $session,
   categoryAdded,
   categoryNameChanged,
   categoryRemoved,
   gameDeleted,
-  gameRestarted,
-  getGameStartIssues,
+  gameProgressResetRequested,
+  gameLaunchRequested,
   hasSessionProgress,
   gameTitleChanged,
   questionAdded,
@@ -30,14 +28,22 @@ import {
 import { DATA_LIMITS, GAME_LIMITS } from '../model/limits';
 import { DraftNumberInput } from './DraftNumberInput';
 import { SongForm } from './SongForm';
-import { useEscapeClose } from './useEscapeClose';
+import {
+  PickerDialog,
+  PickerEmpty,
+  PickerFooterAction,
+  PickerList,
+  PickerRow,
+  PickerToolbar,
+} from './PickerDialog';
 import { InterRoundEditor } from '../interRounds/InterRoundEditor';
 import { InterRoundTemplateDialog } from '../interRounds/InterRoundTemplateDialog';
+import { normalizeSearchText } from '../lib/search';
 
 type EditorTab = 'structure' | 'teams' | 'settings';
 
 export function AdminPanel() {
-  const [config, songs, mediaTracks, audioAssets, session] = useUnit([$activeGame, $songs, $mediaTracks, $audioAssets, $session]);
+  const [config, songs, session] = useUnit([$activeGame, $songs, $session]);
   const [tab, setTab] = useState<EditorTab>('structure');
   const [picker, setPicker] = useState<{ roundId: string; categoryId: string; questionId: string; songId?: string } | null>(null);
   const [showInterRoundLibrary, setShowInterRoundLibrary] = useState(false);
@@ -46,14 +52,7 @@ export function AdminPanel() {
   if (!config) return null;
 
   const startGame = () => {
-    const issues = getGameStartIssues(config, songs, mediaTracks, audioAssets);
-    if (issues.length > 0) {
-      window.alert(formatGameIssues(issues));
-      return;
-    }
-    if (hasSessionProgress(session) && !window.confirm(`Начать «${config.title}» заново? Текущие баллы и прогресс партии будут сброшены.`)) return;
-    gameRestarted();
-    screenChanged('game');
+    gameLaunchRequested({ gameId: config.id, mode: 'fresh' });
   };
 
   const questionsCount = config.rounds.reduce(
@@ -91,7 +90,7 @@ export function AdminPanel() {
             <span>Изменения структуры не пересчитывают уже начисленные баллы и сыгранные вопросы. Если вы готовите новый вариант игры, лучше сбросить прогресс.</span>
           </div>
           <button className="secondary-button" onClick={() => {
-            if (window.confirm('Сбросить сохранённые баллы, сыгранные вопросы и штрафы этой партии?')) gameRestarted();
+            if (window.confirm('Сбросить сохранённые баллы, сыгранные вопросы и штрафы этой партии?')) gameProgressResetRequested();
           }}>Сбросить прогресс</button>
         </div>
       )}
@@ -302,7 +301,6 @@ export function AdminPanel() {
 
       <div className="admin-footer editor-footer">
         <p>Изменения сохраняются автоматически. Песни находятся в общей медиатеке и могут использоваться в других играх.</p>
-        <button className="primary-button" onClick={startGame}>▶ Начать новую игру</button>
       </div>
 
       {showInterRoundLibrary && <InterRoundTemplateDialog onClose={() => setShowInterRoundLibrary(false)} />}
@@ -344,16 +342,6 @@ function StageOrderActions({
   );
 }
 
-function formatGameIssues(issues: string[]) {
-  const visible = issues.slice(0, 8);
-  const rest = issues.length - visible.length;
-  return `Игра пока не готова к запуску:
-
-${visible.map((issue) => `• ${issue}`).join('\n')}${rest > 0 ? `\n• …и ещё ${rest}` : ''}
-
-Исправьте эти пункты в структуре игры или медиатеке.`;
-}
-
 function EditorTabButton({ active, onClick, label, description }: { active: boolean; onClick: () => void; label: string; description: string }) {
   return (
     <button className={active ? 'editor-tab editor-tab--active' : 'editor-tab'} onClick={onClick}>
@@ -364,46 +352,46 @@ function EditorTabButton({ active, onClick, label, description }: { active: bool
 
 function SongPicker({ currentSongId, onSelect, onClose }: { currentSongId?: string; onSelect: (songId?: string) => void; onClose: () => void }) {
   const songs = useUnit($songs);
-  useEscapeClose(onClose);
   const [query, setQuery] = useState('');
   const [adding, setAdding] = useState(false);
   const filtered = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    return normalized ? songs.filter((song) => `${song.artist} ${song.title}`.toLowerCase().includes(normalized)) : songs;
+    const normalized = normalizeSearchText(query);
+    return normalized ? songs.filter((song) => normalizeSearchText(`${song.artist} ${song.title}`).includes(normalized)) : songs;
   }, [query, songs]);
 
   return (
-    <div className="modal-backdrop" onMouseDown={(event) => { if (event.currentTarget === event.target) onClose(); }}>
-      <section className="song-picker-dialog" role="dialog" aria-modal="true" aria-label="Выбор песни">
-        <div className="song-picker-dialog__header">
-          <div><span className="eyebrow">Медиатека</span><h2>Выберите песню</h2></div>
-          <button className="icon-button" onClick={onClose}>×</button>
-        </div>
+    <PickerDialog eyebrow="Медиатека" title={adding ? 'Новая песня' : 'Выберите песню'} onClose={onClose}>
+      {adding ? (
+        <SongForm compact onCreated={(songId) => onSelect(songId)} onCancel={() => setAdding(false)} />
+      ) : (
+        <>
+          <PickerToolbar>
+            <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск песни…" />
+            <button className="secondary-button" onClick={() => setAdding(true)}>+ Новая песня</button>
+          </PickerToolbar>
 
-        {adding ? (
-          <SongForm compact onCreated={(songId) => onSelect(songId)} onCancel={() => setAdding(false)} />
-        ) : (
-          <>
-            <div className="song-picker-toolbar">
-              <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Поиск песни…" />
-              <button className="secondary-button" onClick={() => setAdding(true)}>+ Новая песня</button>
-            </div>
+          <PickerList>
+            {filtered.length === 0 ? (
+              <PickerEmpty>Ничего не найдено.</PickerEmpty>
+            ) : filtered.map((song) => (
+              <PickerRow
+                key={song.id}
+                selected={song.id === currentSongId}
+                onClick={() => onSelect(song.id)}
+                primary={song.artist || 'Без исполнителя'}
+                secondary={song.title || 'Без названия'}
+                meta={`${song.minusTrackId ? 'Минус ✓' : 'Нет минуса'} · ${song.plusTrackId ? 'Плюс ✓' : 'Нет плюса'}`}
+              />
+            ))}
+          </PickerList>
 
-            <div className="song-picker-list">
-              {filtered.length === 0 ? (
-                <div className="empty-state compact-empty"><p>Ничего не найдено.</p></div>
-              ) : filtered.map((song) => (
-                <button key={song.id} className={song.id === currentSongId ? 'song-picker-row song-picker-row--selected' : 'song-picker-row'} onClick={() => onSelect(song.id)}>
-                  <div><strong>{song.artist || 'Без исполнителя'}</strong><span>{song.title || 'Без названия'}</span></div>
-                  <small>{song.minusTrackId ? 'Минус ✓' : 'Нет минуса'} · {song.plusTrackId ? 'Плюс ✓' : 'Нет плюса'}</small>
-                </button>
-              ))}
-            </div>
-
-            {currentSongId && <button className="text-button unlink-song" onClick={() => onSelect(undefined)}>Убрать песню из вопроса</button>}
-          </>
-        )}
-      </section>
-    </div>
+          {currentSongId && (
+            <PickerFooterAction>
+              <button className="text-button" onClick={() => onSelect(undefined)}>Убрать песню из вопроса</button>
+            </PickerFooterAction>
+          )}
+        </>
+      )}
+    </PickerDialog>
   );
 }
