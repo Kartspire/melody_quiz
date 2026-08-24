@@ -155,18 +155,18 @@ describe('melody package', () => {
     expect(prepared.mediaTracks.some((track) => track.name === 'Заставка межраунда')).toBe(true);
   });
 
-  it('deduplicates duplicate songs and shared media tracks inside one archive', async () => {
+  it('preserves distinct logical songs while deduplicating only physical audio', async () => {
     const { song, minusTrack, plusTrack, minus, plus } = await makeFixture();
     const duplicate: Song = { ...song, id: 'song-2' };
     const exported = await exportLibraryPackage([song, duplicate], [minusTrack, plusTrack], [minus, plus]);
     const parsed = await parseMelodyPackage(exported.blob);
     const prepared = await prepareMediaMerge(parsed, [], [], []);
 
-    expect(prepared.songs).toHaveLength(1);
+    expect(prepared.songs).toHaveLength(2);
     expect(prepared.mediaTracks).toHaveLength(2);
     expect(prepared.audioAssets).toHaveLength(2);
-    expect(prepared.stats.newSongs).toBe(1);
-    expect(prepared.stats.deduplicatedSongs).toBe(1);
+    expect(prepared.stats.newSongs).toBe(2);
+    expect(prepared.stats.deduplicatedSongs).toBe(0);
     expect(prepared.stats.newTracks).toBe(2);
     expect(prepared.stats.newAudio).toBe(2);
   });

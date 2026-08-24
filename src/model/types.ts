@@ -111,6 +111,8 @@ export type InterRoundSession = {
   interRoundId: string;
   phase: InterRoundPlayPhase;
   taskIndex: number;
+  /** Stable identity of the current continue-lyrics task or common-theme stage. */
+  itemId: string | null;
   trackIndex: number;
 };
 
@@ -118,6 +120,8 @@ export type GameSession = {
   gameId: string;
   started: boolean;
   stageIndex: number;
+  /** Stable identity of the active stage. Null means the game is finished. */
+  stageId: string | null;
   activeQuestionId: string | null;
   completedQuestionIds: string[];
   completedInterRoundIds: string[];

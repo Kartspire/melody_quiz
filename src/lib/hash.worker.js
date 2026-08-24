@@ -15,9 +15,11 @@ const crc32 = (bytes) => {
 };
 
 self.onmessage = async (event) => {
-  const { id, buffer, includeCrc } = event.data;
+  const { id, blob, includeCrc } = event.data;
   try {
-    const bytes = new Uint8Array(buffer);
+    if (!(blob instanceof Blob)) throw new Error('Hash worker получил некорректный Blob.');
+    // Allocate/read the large ArrayBuffer inside the worker, not on the UI thread.
+    const bytes = new Uint8Array(await blob.arrayBuffer());
     const digest = await crypto.subtle.digest('SHA-256', bytes);
     const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     self.postMessage({ id, sha256, crc32: includeCrc ? crc32(bytes) : undefined });

@@ -56,7 +56,8 @@ sample({
     if (!session) return false;
     const round = getRoundForStage(game, getActiveStage(game, session));
     return Boolean(
-      round?.categories.some((category) =>
+      !session.activeQuestionId
+      && round?.categories.some((category) =>
         category.questions.some((question) => question.id === questionId),
       ) && !session.completedQuestionIds.includes(questionId),
     );
@@ -131,7 +132,7 @@ sample({
         completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId!]),
         scores: {
           ...session.scores,
-          [teamId]: (session.scores[teamId] ?? 0) + (question?.points ?? 0),
+          [teamId]: safeAddScore(session.scores[teamId] ?? 0, question?.points ?? 0),
         },
       },
     };
@@ -149,22 +150,18 @@ sample({
       session?.activeQuestionId
       && game.teams.some((team) => team.id === teamId)
       && !session.answerRevealed
-      && !session.activeExcludedTeamIds.includes(teamId),
+      && !session.activeExcludedTeamIds.includes(teamId)
+      && !session.currentIncorrectTeamIds.includes(teamId),
     );
   },
   fn: ({ game, sessions }, teamId) => {
     const session = sessions[game!.id];
-    const isIncorrect = session.currentIncorrectTeamIds.includes(teamId);
     return {
       ...sessions,
       [game!.id]: {
         ...session,
-        currentIncorrectTeamIds: isIncorrect
-          ? session.currentIncorrectTeamIds.filter((id) => id !== teamId)
-          : unique([...session.currentIncorrectTeamIds, teamId]),
-        nextExcludedTeamIds: isIncorrect
-          ? session.nextExcludedTeamIds.filter((id) => id !== teamId)
-          : unique([...session.nextExcludedTeamIds, teamId]),
+        currentIncorrectTeamIds: unique([...session.currentIncorrectTeamIds, teamId]),
+        nextExcludedTeamIds: unique([...session.nextExcludedTeamIds, teamId]),
       },
     };
   },
@@ -237,6 +234,7 @@ sample({
       [game!.id]: {
         ...session,
         stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
+        stageId: game!.stages[session.stageIndex + 1]?.id ?? null,
         activeQuestionId: null,
         interRound: null,
         awardedTeamId: null,
@@ -270,6 +268,9 @@ sample({
           interRoundId: interRound.id,
           phase: 'play' as const,
           taskIndex: 0,
+          itemId: interRound.templateId === 'continueLyrics'
+            ? interRound.tasks[0]?.id ?? null
+            : interRound.stages[0]?.id ?? null,
           trackIndex: 0,
         },
       },
@@ -361,6 +362,9 @@ sample({
             interRoundId: interRound.id,
             phase: 'play' as const,
             taskIndex: nextTaskIndex,
+            itemId: interRound.templateId === 'continueLyrics'
+              ? interRound.tasks[nextTaskIndex]?.id ?? null
+              : interRound.stages[nextTaskIndex]?.id ?? null,
             trackIndex: 0,
           },
         },
@@ -371,6 +375,7 @@ sample({
       [game!.id]: {
         ...session,
         stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
+        stageId: game!.stages[session.stageIndex + 1]?.id ?? null,
         completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
         interRound: null,
       },
@@ -435,6 +440,12 @@ function resolveQuestion(
     minus: minusTrack ? audioAssets.find((asset) => asset.id === minusTrack.audioId) : undefined,
     plus: plusTrack ? audioAssets.find((asset) => asset.id === plusTrack.audioId) : undefined,
   };
+}
+
+function safeAddScore(current: number, delta: number) {
+  const next = current + delta;
+  if (Number.isSafeInteger(next)) return next;
+  return delta >= 0 ? Number.MAX_SAFE_INTEGER : Number.MIN_SAFE_INTEGER;
 }
 
 function unique(values: string[]) {

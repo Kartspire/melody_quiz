@@ -77,11 +77,12 @@ export async function validatePackageTracks(tracks: PackageMediaTrack[], entries
   if (!Array.isArray(tracks) || tracks.length > DATA_LIMITS.packageTracks) throw new Error('Некорректный список аудиотреков.');
   const ids = new Set<string>();
   const validatedAudioPaths = new Set<string>();
+  const manifestByPath = new Map(manifestFiles.map((file) => [file.path, file]));
   for (const track of tracks) {
     validatePackageTrackMetadata(track);
     if (ids.has(track.id)) throw new Error(`Медиатрек с id «${track.id}» повторяется в архиве.`);
     ids.add(track.id);
-    await validateAudioRef(track.audio, entries, manifestFiles, validatedAudioPaths, `медиатреке «${track.name}»`);
+    await validateAudioRef(track.audio, entries, manifestByPath, validatedAudioPaths, `медиатреке «${track.name}»`);
   }
 }
 
@@ -102,12 +103,13 @@ export async function validateLegacyPackageSongsV1(songs: LegacyPackageSongV1[],
   if (!Array.isArray(songs) || songs.length > DATA_LIMITS.packageSongs) throw new Error('Некорректный список песен.');
   const songIds = new Set<string>();
   const validatedAudioPaths = new Set<string>();
+  const manifestByPath = new Map(manifestFiles.map((file) => [file.path, file]));
   for (const song of songs) {
     validatePackageSongMetadata(song);
     if (songIds.has(song.id)) throw new Error(`Песня с id «${song.id}» повторяется в архиве.`);
     songIds.add(song.id);
     for (const ref of [song.minus, song.plus]) {
-      if (ref) await validateAudioRef(ref, entries, manifestFiles, validatedAudioPaths, `песне «${song.artist} — ${song.title}»`);
+      if (ref) await validateAudioRef(ref, entries, manifestByPath, validatedAudioPaths, `песне «${song.artist} — ${song.title}»`);
     }
   }
 }
@@ -127,11 +129,10 @@ export function validatePackageTrackMetadata(track: Pick<PackageMediaTrack, 'id'
 async function validateAudioRef(
   ref: PackageAudioRef,
   entries: Map<string, Blob>,
-  manifestFiles: PackageManifestFile[],
+  manifestByPath: Map<string, PackageManifestFile>,
   validatedAudioPaths: Set<string>,
   context: string,
 ) {
-  const manifestByPath = new Map(manifestFiles.map((file) => [file.path, file]));
   if (!ref || !isBoundedText(ref.path, 500) || !isBoundedText(ref.name, DATA_LIMITS.text.audioName) || !isBoundedText(ref.type, DATA_LIMITS.text.mimeType) || !Number.isSafeInteger(ref.size) || ref.size <= 0 || ref.size > DATA_LIMITS.audioFileBytes || !ref.path.startsWith('audio/') || !entries.has(ref.path) || !isSha256(ref.sha256)) {
     throw new Error(`Некорректная ссылка на аудио в ${context}.`);
   }

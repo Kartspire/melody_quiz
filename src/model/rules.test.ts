@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DATA_LIMITS, INTER_ROUND_LIMITS } from './limits';
 import {
+  getNextQuestionPoints,
   isPersistableTeamName,
   isQuestionPointsAvailable,
   isTeamColorAvailable,
@@ -62,4 +63,10 @@ describe('game editing rules', () => {
     expect(isValidContinueLyricsCutAtMs(cutAt.max + 1)).toBe(false);
     expect(isValidContinueLyricsCutAtMs(500.5)).toBe(false);
   });
+
+  it('chooses a free persistable value for a newly added question', () => {
+    expect(getNextQuestionPoints([{ points: 100 }, { points: 300 }, { points: 200 }])).toBe(400);
+    expect(getNextQuestionPoints([{ points: 1_000_000_000 }, { points: 100 }])).toBe(200);
+  });
+
 });

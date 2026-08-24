@@ -92,4 +92,16 @@ describe('game validation', () => {
     expect(() => assertValidGameStructure(game)).not.toThrow();
   });
 
+
+  it('reports malformed inter-round entries instead of throwing a TypeError', () => {
+    const game = createGame('Тест');
+    const lyrics = createContinueLyricsInterRound();
+    game.interRounds = [lyrics];
+    game.stages.push(createInterRoundStage(lyrics.id));
+    lyrics.tasks = [null] as unknown as typeof lyrics.tasks;
+
+    expect(() => getGameStorageIssues(game)).not.toThrow();
+    expect(getGameStorageIssues(game).some((issue) => issue.includes('структура задания'))).toBe(true);
+  });
+
 });

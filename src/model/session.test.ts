@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, createInterRoundStage, createSession } from './defaults';
+import { createGame, createInterRoundStage, createRound, createSession } from './defaults';
 import { createCommonTheme4InterRound, createContinueLyricsInterRound } from '../interRounds/templates';
 import { normalizeGameConfig } from './migrations';
 import { isRoundComplete, reconcileSession } from './session';
@@ -39,7 +39,7 @@ describe('session helpers', () => {
 
   it('migrates a legacy roundIndex to the matching stage when inter-rounds exist', () => {
     const game = createGame('Тест');
-    const secondRound = { ...game.rounds[0], id: 'round-second', name: 'Раунд 2' };
+    const secondRound = { ...createRound(1), id: 'round-second', name: 'Раунд 2' };
     const interRound = createContinueLyricsInterRound();
     game.rounds = [game.rounds[0], secondRound];
     game.interRounds = [interRound];
@@ -89,6 +89,66 @@ describe('session helpers', () => {
     }
     expect(reconciled.interRound?.taskIndex).toBe(0);
     expect(reconciled.interRound?.trackIndex).toBe(3);
+  });
+
+
+  it('keeps the same active stage when stages are reordered', () => {
+    const game = createGame('Тест');
+    const secondRound = { ...createRound(1), id: 'round-second', name: 'Раунд 2' };
+    const secondStage = { id: 'stage-second', kind: 'round' as const, roundId: secondRound.id };
+    game.rounds = [game.rounds[0], secondRound];
+    game.stages = [game.stages[0], secondStage];
+    const session = createSession(game);
+    session.stageIndex = 1;
+    session.stageId = secondStage.id;
+    session.started = true;
+
+    game.stages = [secondStage, game.stages[0]];
+    const reconciled = reconcileSession(game, session);
+
+    expect(reconciled.stageId).toBe(secondStage.id);
+    expect(reconciled.stageIndex).toBe(0);
+  });
+
+  it('keeps the same inter-round item when an earlier item is removed', () => {
+    const game = createGame('Тест');
+    const interRound = createContinueLyricsInterRound();
+    interRound.tasks.push({ ...interRound.tasks[0], id: 'task-second' });
+    game.interRounds = [interRound];
+    const interStage = createInterRoundStage(interRound.id);
+    game.stages = [game.stages[0], interStage];
+    const session = createSession(game);
+    session.started = true;
+    session.stageIndex = 1;
+    session.stageId = interStage.id;
+    session.interRound = {
+      interRoundId: interRound.id,
+      phase: 'play',
+      taskIndex: 1,
+      itemId: 'task-second',
+      trackIndex: 0,
+    };
+
+    interRound.tasks = interRound.tasks.slice(1);
+    const reconciled = reconcileSession(game, session);
+
+    expect(reconciled.interRound?.itemId).toBe('task-second');
+    expect(reconciled.interRound?.taskIndex).toBe(0);
+  });
+
+  it('advances from a round that became complete after editing', () => {
+    const game = createGame('Тест');
+    const secondRound = { ...createRound(1), id: 'round-second', name: 'Раунд 2' };
+    game.rounds = [game.rounds[0], secondRound];
+    game.stages = [game.stages[0], { id: 'stage-second', kind: 'round', roundId: secondRound.id }];
+    const session = createSession(game);
+    session.started = true;
+    session.completedQuestionIds = game.rounds[0].categories[0].questions.map((question) => question.id);
+
+    const reconciled = reconcileSession(game, session);
+
+    expect(reconciled.stageIndex).toBe(1);
+    expect(reconciled.stageId).toBe('stage-second');
   });
 
 });

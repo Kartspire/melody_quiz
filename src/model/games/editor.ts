@@ -10,6 +10,7 @@ import {
 } from '../defaults';
 import { DATA_LIMITS, GAME_LIMITS } from '../limits';
 import {
+  getNextQuestionPoints,
   isPersistableTeamName,
   isQuestionPointsAvailable,
   isTeamColorAvailable,
@@ -24,7 +25,7 @@ import {
   createContinueLyricsTask,
   createInterRound,
 } from '../../interRounds/templates';
-import { $games, $sessions, $songs } from '../core/state';
+import { $games, $mediaTracks, $sessions, $songs } from '../core/state';
 import { $activeGame } from './selectors';
 import type { GameConfig, InterRound, InterRoundTemplateId, Question, Team } from '../types';
 
@@ -235,14 +236,14 @@ sample({
 
 sample({
   clock: continueLyricsTaskChanged,
-  source: activeGameSource,
-  filter: ({ game }, { interRoundId, taskId, patch }) => Boolean(
+  source: combine({ game: $activeGame, mediaTracks: $mediaTracks }),
+  filter: ({ game, mediaTracks }, { interRoundId, taskId, patch }) => Boolean(
     game
     && game.interRounds.some((item) => item.id === interRoundId
       && item.templateId === 'continueLyrics'
       && item.tasks.some((task) => task.id === taskId))
     && (patch.answerText === undefined || patch.answerText.length <= DATA_LIMITS.text.interRoundAnswer)
-    && (patch.trackId === undefined || patch.trackId.length <= DATA_LIMITS.text.id)
+    && (patch.trackId === undefined || (patch.trackId.length <= DATA_LIMITS.text.id && mediaTracks.some((track) => track.id === patch.trackId)))
     && (patch.requiredWordsCount === undefined || isValidContinueLyricsRequiredWordsCount(patch.requiredWordsCount))
     && (patch.cutAtMs === undefined || isValidContinueLyricsCutAtMs(patch.cutAtMs)),
   ),
@@ -292,15 +293,15 @@ sample({
 
 sample({
   clock: commonThemeTrackChanged,
-  source: activeGameSource,
-  filter: ({ game }, { interRoundId, stageId, itemId, patch }) => Boolean(
+  source: combine({ game: $activeGame, mediaTracks: $mediaTracks }),
+  filter: ({ game, mediaTracks }, { interRoundId, stageId, itemId, patch }) => Boolean(
     game
     && game.interRounds.some((item) => item.id === interRoundId
       && item.templateId === 'commonTheme4'
       && item.stages.some((stage) => stage.id === stageId && stage.tracks.some((track) => track.id === itemId)))
     && (patch.answerTitle === undefined || patch.answerTitle.length <= DATA_LIMITS.text.songTitle)
     && (patch.answerArtist === undefined || patch.answerArtist.length <= DATA_LIMITS.text.artist)
-    && (patch.trackId === undefined || patch.trackId.length <= DATA_LIMITS.text.id),
+    && (patch.trackId === undefined || (patch.trackId.length <= DATA_LIMITS.text.id && mediaTracks.some((track) => track.id === patch.trackId))),
   ),
   fn: ({ game }, { interRoundId, stageId, itemId, patch }) => touchGame({
     ...game!,
@@ -409,8 +410,8 @@ sample({
           ...round,
           categories: round.categories.map((category) => {
             if (category.id !== categoryId) return category;
-            const lastPoints = category.questions.at(-1)?.points ?? 0;
-            return { ...category, questions: [...category.questions, createQuestion(lastPoints + 100)] };
+            const points = getNextQuestionPoints(category.questions);
+            return { ...category, questions: [...category.questions, createQuestion(points)] };
           }),
         }
       : round),

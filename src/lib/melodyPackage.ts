@@ -229,27 +229,22 @@ export async function prepareMediaMerge(
   const newAudioHashes = new Set<string>();
   let internalAudioReuses = 0;
 
-  const trackByFingerprint = new Map<string, MediaTrack>();
-  const initialTrackFingerprints = new Set<string>();
-  for (const track of currentMediaTracks) {
-    const fingerprint = trackFingerprint(track.name, track.audioId);
-    if (!trackByFingerprint.has(fingerprint)) trackByFingerprint.set(fingerprint, track);
-    initialTrackFingerprints.add(fingerprint);
-  }
-
+  const currentTrackById = new Map(currentMediaTracks.map((track) => [track.id, track]));
   const usedTrackIds = new Set(currentMediaTracks.map((track) => track.id));
   const trackIdMap = new Map<string, string>();
   let newTracks = 0;
   let reusedTracks = 0;
-  let deduplicatedTracks = 0;
+  const deduplicatedTracks = 0;
 
   for (const packageTrack of packageData.tracks) {
-    const fingerprint = trackFingerprint(packageTrack.name, packageTrack.audio.sha256);
-    const existing = trackByFingerprint.get(fingerprint);
-    if (existing) {
-      trackIdMap.set(packageTrack.id, existing.id);
-      if (initialTrackFingerprints.has(fingerprint)) reusedTracks += 1;
-      else deduplicatedTracks += 1;
+    const existingById = currentTrackById.get(packageTrack.id);
+    if (
+      existingById
+      && normalizeText(existingById.name) === normalizeText(packageTrack.name)
+      && existingById.audioId === packageTrack.audio.sha256
+    ) {
+      trackIdMap.set(packageTrack.id, existingById.id);
+      reusedTracks += 1;
       countAudioReuse(packageTrack.audio.sha256, initialAudioHashes, newAudioHashes, usedExistingAudioHashes, () => { internalAudioReuses += 1; });
       continue;
     }
@@ -275,34 +270,32 @@ export async function prepareMediaMerge(
     };
     mergedTracks.push(track);
     trackIdMap.set(packageTrack.id, track.id);
-    trackByFingerprint.set(fingerprint, track);
     newTracks += 1;
   }
 
-  const songByFingerprint = new Map<string, Song>();
-  const initialSongFingerprints = new Set<string>();
-  for (const song of currentSongs) {
-    const fingerprint = songFingerprint(song.artist, song.title, song.minusTrackId, song.plusTrackId);
-    if (!songByFingerprint.has(fingerprint)) songByFingerprint.set(fingerprint, song);
-    initialSongFingerprints.add(fingerprint);
-  }
+  const currentSongById = new Map(currentSongs.map((song) => [song.id, song]));
   const usedSongIds = new Set(currentSongs.map((song) => song.id));
   const songIdMap = new Map<string, string>();
   let newSongs = 0;
   let reusedSongs = 0;
-  let deduplicatedSongs = 0;
+  const deduplicatedSongs = 0;
 
   for (const packageSong of packageData.songs) {
     const minusTrackId = packageSong.minusTrackId ? trackIdMap.get(packageSong.minusTrackId) : undefined;
     const plusTrackId = packageSong.plusTrackId ? trackIdMap.get(packageSong.plusTrackId) : undefined;
     if (packageSong.minusTrackId && !minusTrackId) throw new Error(`Не удалось сопоставить минус песни «${packageSong.artist} — ${packageSong.title}».`);
     if (packageSong.plusTrackId && !plusTrackId) throw new Error(`Не удалось сопоставить плюс песни «${packageSong.artist} — ${packageSong.title}».`);
-    const fingerprint = songFingerprint(packageSong.artist, packageSong.title, minusTrackId, plusTrackId);
-    const existing = songByFingerprint.get(fingerprint);
-    if (existing) {
-      songIdMap.set(packageSong.id, existing.id);
-      if (initialSongFingerprints.has(fingerprint)) reusedSongs += 1;
-      else deduplicatedSongs += 1;
+
+    const existingById = currentSongById.get(packageSong.id);
+    if (
+      existingById
+      && normalizeText(existingById.artist) === normalizeText(packageSong.artist)
+      && normalizeText(existingById.title) === normalizeText(packageSong.title)
+      && existingById.minusTrackId === minusTrackId
+      && existingById.plusTrackId === plusTrackId
+    ) {
+      songIdMap.set(packageSong.id, existingById.id);
+      reusedSongs += 1;
       continue;
     }
 
@@ -319,7 +312,6 @@ export async function prepareMediaMerge(
     };
     mergedSongs.push(song);
     songIdMap.set(packageSong.id, song.id);
-    songByFingerprint.set(fingerprint, song);
     newSongs += 1;
   }
 
@@ -549,14 +541,6 @@ function remapGameReferences(
     })),
     interRounds: sourceGame.interRounds.map((interRound) => remapInterRoundTrackIds(interRound, (trackId) => trackIdMap.get(trackId))),
   };
-}
-
-function songFingerprint(artist: string, title: string, minusTrackId?: string, plusTrackId?: string) {
-  return [normalizeText(artist), normalizeText(title), minusTrackId ?? '', plusTrackId ?? ''].join('|');
-}
-
-function trackFingerprint(name: string, audioHash: string) {
-  return `${normalizeText(name)}|${audioHash}`;
 }
 
 function normalizeText(value: string) { return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU'); }

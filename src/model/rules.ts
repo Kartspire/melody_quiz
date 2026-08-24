@@ -11,6 +11,27 @@ export function isValidQuestionPoints(value: unknown): value is number {
     && value <= DATA_LIMITS.maxQuestionPoints;
 }
 
+
+export function getNextQuestionPoints(questions: readonly { points: number }[]) {
+  const used = new Set(questions.map((question) => question.points));
+  const max = questions.reduce((value, question) => Math.max(value, question.points), 0);
+  const nextAfterMax = max + 100;
+  if (isValidQuestionPoints(nextAfterMax) && !used.has(nextAfterMax)) return nextAfterMax;
+
+  // A category contains at most 100 questions, so one of the first N+1 standard
+  // 100-point slots is guaranteed to be free.
+  for (let index = 1; index <= questions.length + 1; index += 1) {
+    const candidate = index * 100;
+    if (isValidQuestionPoints(candidate) && !used.has(candidate)) return candidate;
+  }
+
+  // Defensive fallback for custom point distributions close to the upper limit.
+  for (let candidate = 1; candidate <= questions.length + 1; candidate += 1) {
+    if (!used.has(candidate)) return candidate;
+  }
+  return 1;
+}
+
 export function isQuestionPointsAvailable(
   questions: readonly { id: string; points: number }[],
   questionId: string,

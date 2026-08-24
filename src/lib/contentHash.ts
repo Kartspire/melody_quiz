@@ -43,7 +43,6 @@ function canUseWorker() {
 
 async function digestInWorker(blob: Blob, includeCrc: boolean): Promise<BlobDigest> {
   const id = ++requestId;
-  const buffer = await blob.arrayBuffer();
   const worker = new Worker(new URL('./hash.worker.js', import.meta.url), { type: 'module' });
 
   return new Promise((resolve, reject) => {
@@ -61,6 +60,6 @@ async function digestInWorker(blob: Blob, includeCrc: boolean): Promise<BlobDige
       }
       resolve({ sha256: event.data.sha256, crc32: event.data.crc32 });
     };
-    worker.postMessage({ id, buffer, includeCrc }, [buffer]);
+    worker.postMessage({ id, blob, includeCrc });
   });
 }

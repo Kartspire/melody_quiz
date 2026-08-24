@@ -107,9 +107,36 @@ function ContinueLyricsPlayer({
   last: boolean;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const cutFrameRef = useRef<number | null>(null);
   const source = useObjectUrl(asset?.blob);
   const [playing, setPlaying] = useState(false);
   const [cutReached, setCutReached] = useState(false);
+
+  const stopCutMonitor = () => {
+    if (cutFrameRef.current !== null) cancelAnimationFrame(cutFrameRef.current);
+    cutFrameRef.current = null;
+  };
+
+  const startCutMonitor = () => {
+    stopCutMonitor();
+    const check = () => {
+      const audio = audioRef.current;
+      if (!audio || phase !== 'play' || audio.paused) {
+        cutFrameRef.current = null;
+        return;
+      }
+      if (audio.currentTime * 1000 >= cutAtMs) {
+        audio.pause();
+        try { audio.currentTime = cutAtMs / 1000; } catch { /* ignore seek errors */ }
+        setPlaying(false);
+        setCutReached(true);
+        cutFrameRef.current = null;
+        return;
+      }
+      cutFrameRef.current = requestAnimationFrame(check);
+    };
+    cutFrameRef.current = requestAnimationFrame(check);
+  };
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -135,6 +162,7 @@ function ContinueLyricsPlayer({
     else audio.addEventListener('loadedmetadata', prepare, { once: true });
     return () => {
       cancelled = true;
+      stopCutMonitor();
       audio.removeEventListener('loadedmetadata', prepare);
     };
   }, [source, phase, cutAtMs]);
@@ -145,10 +173,17 @@ function ContinueLyricsPlayer({
     if (audio.paused) {
       if (phase === 'play' && audio.currentTime >= cutAtMs / 1000) audio.currentTime = 0;
       if (phase === 'answer' && Number.isFinite(audio.duration) && audio.currentTime >= audio.duration - 0.05) audio.currentTime = 0;
-      await audio.play();
-      setPlaying(true);
+      try {
+        await audio.play();
+        setPlaying(true);
+        if (phase === 'play') startCutMonitor();
+      } catch (error) {
+        console.error('Inter-round audio playback failed', error);
+        setPlaying(false);
+      }
     } else {
       audio.pause();
+      stopCutMonitor();
       setPlaying(false);
     }
   };
@@ -167,16 +202,9 @@ function ContinueLyricsPlayer({
           <button className="primary-button" disabled={!source} onClick={() => void toggle()}>{playing ? 'Пауза' : cutReached ? 'Проиграть фрагмент заново' : '▶ Запустить фрагмент'}</button>
           <audio
             ref={audioRef}
-            onTimeUpdate={(event) => {
-              if (event.currentTarget.currentTime * 1000 >= cutAtMs) {
-                event.currentTarget.pause();
-                event.currentTarget.currentTime = cutAtMs / 1000;
-                setPlaying(false);
-                setCutReached(true);
-              }
-            }}
-            onPause={() => setPlaying(false)}
-            onEnded={() => { setPlaying(false); setCutReached(true); }}
+            onPlay={() => { setPlaying(true); startCutMonitor(); }}
+            onPause={() => { stopCutMonitor(); setPlaying(false); }}
+            onEnded={() => { stopCutMonitor(); setPlaying(false); setCutReached(true); }}
           />
           {cutReached && <div className="inter-round-waiting-note">Трек остановлен. Дождитесь, пока команды сдадут ответы.</div>}
           <button className="secondary-button inter-round-reveal-button" disabled={!cutReached} onClick={onReveal}>Показать правильный ответ</button>
@@ -240,8 +268,18 @@ function CommonThemePlayer({
   const play = async () => {
     const audio = audioRef.current;
     if (!audio || !source || playingComplete) return;
-    await audio.play();
-    setPlaying(true);
+    if (!audio.paused) {
+      audio.pause();
+      setPlaying(false);
+      return;
+    }
+    try {
+      await audio.play();
+      setPlaying(true);
+    } catch (error) {
+      console.error('Inter-round audio playback failed', error);
+      setPlaying(false);
+    }
   };
 
   const advance = () => {
@@ -289,7 +327,7 @@ function CommonThemePlayer({
           <>
             <h2>Трек {currentIndex + 1}</h2>
             <p>Запишите название и исполнителя. После четырёх треков определите общую тему.</p>
-            <button className="primary-button" disabled={!source} onClick={() => void play()}>{playing ? 'Играет…' : '▶ Включить трек'}</button>
+            <button className="primary-button" disabled={!source} onClick={() => void play()}>{playing ? 'Пауза' : '▶ Включить трек'}</button>
             <audio ref={audioRef} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={advance} />
             <div className="inter-round-inline-actions">
               <button className="secondary-button" onClick={advance}>{currentIndex < 3 ? 'Следующий трек →' : 'Закончить прослушивание →'}</button>

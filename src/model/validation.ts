@@ -169,6 +169,10 @@ function validateInterRound(
     interRound.tasks.forEach((task, taskIndex) => {
       const taskPrefix = `${prefix}, задание ${taskIndex + 1}`;
       takeId(task?.id, taskPrefix);
+      if (!task || typeof task !== 'object') {
+        issues.push(`${taskPrefix}: некорректная структура задания.`);
+        return;
+      }
       if (task.trackId !== undefined && (!isBoundedText(task.trackId, DATA_LIMITS.text.id) || !task.trackId)) issues.push(`${taskPrefix}: некорректная ссылка на аудиотрек.`);
       if (requiresPlayable && !task.trackId) issues.push(`${taskPrefix}: не выбран аудиотрек.`);
       if (!isValidContinueLyricsRequiredWordsCount(task.requiredWordsCount)) issues.push(`${taskPrefix}: количество слов должно быть от ${INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.min} до ${INTER_ROUND_LIMITS.continueLyrics.requiredWordsCount.max}.`);
@@ -186,6 +190,10 @@ function validateInterRound(
     interRound.stages.forEach((stage, stageIndex) => {
       const stagePrefix = `${prefix}, этап ${stageIndex + 1}`;
       takeId(stage?.id, stagePrefix);
+      if (!stage || typeof stage !== 'object') {
+        issues.push(`${stagePrefix}: некорректная структура этапа.`);
+        return;
+      }
       if (!Array.isArray(stage.tracks) || stage.tracks.length !== 4) {
         issues.push(`${stagePrefix}: должно быть ровно 4 трека.`);
         return;
@@ -193,6 +201,10 @@ function validateInterRound(
       stage.tracks.forEach((track, trackIndex) => {
         const trackPrefix = `${stagePrefix}, трек ${trackIndex + 1}`;
         takeId(track?.id, trackPrefix);
+        if (!track || typeof track !== 'object') {
+          issues.push(`${trackPrefix}: некорректная структура трека.`);
+          return;
+        }
         if (track.trackId !== undefined && (!isBoundedText(track.trackId, DATA_LIMITS.text.id) || !track.trackId)) issues.push(`${trackPrefix}: некорректная ссылка на аудиотрек.`);
         if (requiresPlayable && !track.trackId) issues.push(`${trackPrefix}: не выбран аудиотрек.`);
         if (!isBoundedText(track.answerTitle, DATA_LIMITS.text.songTitle) || (requiresPlayable && !track.answerTitle.trim())) issues.push(`${trackPrefix}: не указано название песни для ответа.`);
@@ -352,12 +364,53 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (!session || !gameIds.has(session.gameId)) throw new Error('Локальное хранилище содержит сессию для отсутствующей игры.');
     if (sessionGameIds.has(session.gameId)) throw new Error(`Для игры «${session.gameId}» найдено несколько игровых сессий.`);
     sessionGameIds.add(session.gameId);
-    if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean') throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
+
+    const game = state.games.find((item) => item.id === session.gameId)!;
+    const teamIds = new Set(game.teams.map((team) => team.id));
+    const questionIds = new Set(game.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions.map((question) => question.id))));
+    const interRoundIds = new Set(game.interRounds.map((interRound) => interRound.id));
+
+    if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || session.stageIndex > game.stages.length || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean') {
+      throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
+    }
+    const expectedStageId = game.stages[session.stageIndex]?.id ?? null;
+    if (session.stageId !== expectedStageId) throw new Error('Игровая сессия содержит несогласованный активный этап.');
+
     for (const list of [session.completedQuestionIds, session.completedInterRoundIds, session.activeExcludedTeamIds, session.currentIncorrectTeamIds, session.nextExcludedTeamIds]) {
       if (!Array.isArray(list) || list.some((id) => !isBoundedText(id, DATA_LIMITS.text.id))) throw new Error('Локальное хранилище содержит повреждённый список идентификаторов в игровой сессии.');
     }
-    if (session.interRound && (!isBoundedText(session.interRound.interRoundId, DATA_LIMITS.text.id) || !['intro', 'play', 'answer'].includes(session.interRound.phase) || !Number.isSafeInteger(session.interRound.taskIndex) || session.interRound.taskIndex < 0 || !Number.isSafeInteger(session.interRound.trackIndex) || session.interRound.trackIndex < 0)) throw new Error('Локальное хранилище содержит повреждённый прогресс межраунда.');
+    if (session.completedQuestionIds.some((id) => !questionIds.has(id))) throw new Error('Игровая сессия содержит завершённый вопрос из другой игры.');
+    if (session.completedInterRoundIds.some((id) => !interRoundIds.has(id))) throw new Error('Игровая сессия содержит завершённый межраунд из другой игры.');
+    for (const ids of [session.activeExcludedTeamIds, session.currentIncorrectTeamIds, session.nextExcludedTeamIds]) {
+      if (ids.some((id) => !teamIds.has(id))) throw new Error('Игровая сессия содержит ссылку на отсутствующую команду.');
+    }
+
     if (!session.scores || typeof session.scores !== 'object' || Object.values(session.scores).some((score) => !Number.isSafeInteger(score))) throw new Error('Локальное хранилище содержит повреждённые баллы игровой сессии.');
+    if (Object.keys(session.scores).some((teamId) => !teamIds.has(teamId)) || [...teamIds].some((teamId) => !Number.isSafeInteger(session.scores[teamId]))) {
+      throw new Error('Таблица счёта игровой сессии не соответствует списку команд.');
+    }
+
+    const activeStage = game.stages[session.stageIndex];
+    if (session.activeQuestionId !== null) {
+      if (!isBoundedText(session.activeQuestionId, DATA_LIMITS.text.id) || !activeStage || activeStage.kind !== 'round') throw new Error('Игровая сессия содержит некорректный активный вопрос.');
+      const round = game.rounds.find((item) => item.id === activeStage.roundId);
+      const activeRoundQuestionIds = new Set(round?.categories.flatMap((category) => category.questions.map((question) => question.id)) ?? []);
+      if (!activeRoundQuestionIds.has(session.activeQuestionId)) throw new Error('Активный вопрос не относится к текущему раунду.');
+    }
+    if (session.awardedTeamId !== null && (!teamIds.has(session.awardedTeamId) || !session.activeQuestionId)) throw new Error('Игровая сессия содержит некорректную команду-победителя вопроса.');
+
+    if (session.interRound) {
+      if (!activeStage || activeStage.kind !== 'interRound' || activeStage.interRoundId !== session.interRound.interRoundId) throw new Error('Прогресс межраунда не соответствует текущему этапу.');
+      if (!isBoundedText(session.interRound.interRoundId, DATA_LIMITS.text.id) || !['intro', 'play', 'answer'].includes(session.interRound.phase) || !Number.isSafeInteger(session.interRound.taskIndex) || session.interRound.taskIndex < 0 || !Number.isSafeInteger(session.interRound.trackIndex) || session.interRound.trackIndex < 0) throw new Error('Локальное хранилище содержит повреждённый прогресс межраунда.');
+      const interRound = game.interRounds.find((item) => item.id === session.interRound!.interRoundId)!;
+      const items = interRound.templateId === 'continueLyrics' ? interRound.tasks : interRound.stages;
+      const expectedItemId = items[session.interRound.taskIndex]?.id ?? null;
+      if (session.interRound.itemId !== expectedItemId) throw new Error('Прогресс межраунда содержит несогласованный текущий шаг.');
+      if (interRound.templateId === 'continueLyrics' && session.interRound.trackIndex !== 0) throw new Error('Некорректная позиция трека в межраунде «Продолжи песню».');
+      if (interRound.templateId === 'commonTheme4' && session.interRound.trackIndex > 4) throw new Error('Некорректная позиция трека в межраунде «4 трека».');
+    } else if (activeStage?.kind === 'interRound' && session.completedInterRoundIds.includes(activeStage.interRoundId)) {
+      throw new Error('Сессия остановлена на уже завершённом межраунде.');
+    }
   }
   if (state.activeGameId !== null && !gameIds.has(state.activeGameId)) throw new Error('Активная игра отсутствует в локальном хранилище.');
 }

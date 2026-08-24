@@ -57,6 +57,7 @@ export class StorageConflictError extends Error {
 const openDatabase = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
+    let settled = false;
 
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -69,9 +70,24 @@ const openDatabase = () =>
       if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
     };
 
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-    request.onblocked = () => reject(new Error('Обновление локальной базы заблокировано другой открытой вкладкой. Закройте другие вкладки игры и повторите.'));
+    request.onsuccess = () => {
+      if (settled) {
+        request.result.close();
+        return;
+      }
+      settled = true;
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(request.error);
+    };
+    request.onblocked = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Обновление локальной базы заблокировано другой открытой вкладкой. Закройте другие вкладки игры и повторите.'));
+    };
   });
 
 const requestValue = <T>(request: IDBRequest<T>) =>
@@ -115,7 +131,7 @@ export const loadState = async (): Promise<PersistedState> => {
       lastSavedState = canonical.state;
 
       if (canonical.changed) {
-        await rewriteCanonicalState(canonical.state);
+        await rewriteCanonicalState(canonical.state, knownRevision);
         lastSavedState = canonical.state;
       }
       return canonical.state;
@@ -124,7 +140,7 @@ export const loadState = async (): Promise<PersistedState> => {
     const state = legacy?.config && legacy?.session ? await migrateLegacyState(legacy) : createInitialState();
     assertValidPersistedState(state);
     lastSavedState = null;
-    await rewriteCanonicalState(state);
+    await rewriteCanonicalState(state, knownRevision);
     await deleteLegacyState();
     lastSavedState = state;
     return state;
@@ -167,7 +183,7 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
   }
 }
 
-async function rewriteCanonicalState(state: PersistedState): Promise<void> {
+async function rewriteCanonicalState(state: PersistedState, expectedRevision: number): Promise<void> {
   const db = await openDatabase();
   try {
     const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
@@ -179,6 +195,10 @@ async function rewriteCanonicalState(state: PersistedState): Promise<void> {
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
     const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
+    if (actualRevision !== expectedRevision) {
+      transaction.abort();
+      throw new StorageConflictError();
+    }
     gamesStore.clear();
     songsStore.clear();
     mediaTracksStore.clear();

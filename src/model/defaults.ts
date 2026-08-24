@@ -28,7 +28,12 @@ function withSuffix(value: string, suffix: string, maxLength: number, fallback: 
   return `${source.slice(0, allowedSourceLength).trimEnd()}${suffix}`.slice(0, maxLength);
 }
 
-const TEAM_COLORS = ['#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316', '#84cc16', '#6366f1', '#14b8a6', '#e11d48'];
+const TEAM_COLORS = [
+  '#ef4444', '#3b82f6', '#22c55e', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4', '#f97316',
+  '#84cc16', '#6366f1', '#14b8a6', '#e11d48', '#0ea5e9', '#8b5cf6', '#10b981', '#f43f5e',
+  '#64748b', '#d946ef', '#65a30d', '#ea580c', '#0891b2', '#7c3aed', '#059669', '#be123c',
+  '#475569', '#c026d3', '#4d7c0f', '#c2410c', '#0e7490', '#6d28d9', '#047857', '#9f1239',
+] as const;
 
 export const createQuestion = (points = 100): Question => ({ id: createId('question'), points });
 
@@ -112,6 +117,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   gameId: config.id,
   started: false,
   stageIndex: 0,
+  stageId: config.stages[0]?.id ?? null,
   activeQuestionId: null,
   completedQuestionIds: [],
   completedInterRoundIds: [],
@@ -256,6 +262,7 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     gameId,
     started: legacy.session.started ?? false,
     stageIndex,
+    stageId: stages[stageIndex]?.id ?? null,
     activeQuestionId: legacy.session.activeQuestionId ?? null,
     completedQuestionIds: legacy.session.completedQuestionIds ?? [],
     completedInterRoundIds: [],

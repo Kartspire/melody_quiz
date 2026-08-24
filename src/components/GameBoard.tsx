@@ -123,6 +123,12 @@ export function GameBoard() {
           <h2>В этом раунде пока нет песен</h2>
           <p>Добавьте категории и песни в редакторе.</p>
         </div>
+      ) : completedCount === questionsCount ? (
+        <div className="empty-state">
+          <h2>Раунд завершён</h2>
+          <p>Все вопросы этого раунда уже разыграны.</p>
+          <button className="primary-button" onClick={() => nextStageRequested()}>Перейти к следующему этапу →</button>
+        </div>
       ) : (
         <div className="quiz-board" style={{ '--category-count': round.categories.length } as React.CSSProperties}>
           {round.categories.map((category) => (

@@ -2,7 +2,7 @@ import { combine, createEvent, sample } from 'effector';
 import { cloneSong } from '../defaults';
 import { DATA_LIMITS } from '../limits';
 import { isMediaTrackUsed } from './selectors';
-import { isSha256 } from '../validation';
+import { isSha256, isValidTimestamp } from '../validation';
 import { $audioAssets, $games, $mediaTracks, $songs } from '../core/state';
 import type { AudioAsset, MediaTrack, Song } from '../types';
 
@@ -22,6 +22,7 @@ export const songTrackChanged = createEvent<{
   audioAsset?: AudioAsset;
 }>();
 
+const songAdditionApplied = createEvent<{ song: Song; mediaTracks: MediaTrack[]; audioAssets: AudioAsset[] }>();
 const mediaTrackAdditionApplied = createEvent<{ track: MediaTrack; audioAsset: AudioAsset }>();
 const mediaTrackAudioChangeApplied = createEvent<{
   trackId: string;
@@ -55,7 +56,7 @@ $games.on(songDeletionApplied, (games, { songId }) => games.map((game) => {
 }));
 
 $songs
-  .on(songAdded, (songs, { song }) => {
+  .on(songAdditionApplied, (songs, { song }) => {
     if (songs.some((item) => item.id === song.id)) return songs;
     if (
       song.artist.length > DATA_LIMITS.text.artist
@@ -94,7 +95,7 @@ $songs
   .on(songDeletionApplied, (songs, { songId }) => songs.filter((song) => song.id !== songId));
 
 $mediaTracks
-  .on(songAdded, (tracks, { mediaTracks }) => mergeById(tracks, mediaTracks))
+  .on(songAdditionApplied, (tracks, { mediaTracks }) => mergeById(tracks, mediaTracks))
   .on(mediaTrackAdditionApplied, (tracks, { track }) => mergeById(tracks, [track]))
   .on(mediaTrackChanged, (tracks, { trackId, patch }) => tracks.map((track) => {
     if (track.id !== trackId) return track;
@@ -109,7 +110,7 @@ $mediaTracks
   .on(mediaTrackDeletionApplied, (tracks, { trackId }) => tracks.filter((track) => track.id !== trackId));
 
 $audioAssets
-  .on(songAdded, (assets, { audioAssets }) => mergeAudioAssets(assets, audioAssets))
+  .on(songAdditionApplied, (assets, { audioAssets }) => mergeAudioAssets(assets, audioAssets))
   .on(mediaTrackAdditionApplied, (assets, { audioAsset }) => mergeAudioAssets(assets, [audioAsset]))
   .on(mediaTrackAudioChangeApplied, (assets, { audioAsset, removableAudioId }) => {
     const withoutOld = removableAudioId && removableAudioId !== audioAsset.id
@@ -123,11 +124,26 @@ $audioAssets
   );
 
 sample({
+  clock: songAdded,
+  source: combine({ songs: $songs, mediaTracks: $mediaTracks, audioAssets: $audioAssets }),
+  filter: ({ songs, mediaTracks, audioAssets }, payload) => isValidSongAddition(
+    songs,
+    mediaTracks,
+    audioAssets,
+    payload,
+  ),
+  fn: (_, payload) => payload,
+  target: songAdditionApplied,
+});
+
+sample({
   clock: mediaTrackAdded,
-  filter: ({ track, audioAsset }) => track.name.trim().length > 0
-    && track.name.length <= DATA_LIMITS.text.mediaTrackName
+  source: $mediaTracks,
+  filter: (tracks, { track, audioAsset }) => !tracks.some((item) => item.id === track.id)
+    && isValidMediaTrack(track)
     && track.audioId === audioAsset.id
     && isValidAudioAsset(audioAsset),
+  fn: (_, payload) => payload,
   target: mediaTrackAdditionApplied,
 });
 
@@ -154,9 +170,9 @@ sample({
     if (!songs.some((song) => song.id === payload.songId)) return false;
     if (!payload.trackId && !payload.track) return true;
     if (payload.track) {
-      return payload.track.id === (payload.trackId ?? payload.track.id)
-        && payload.track.name.trim().length > 0
-        && payload.track.name.length <= DATA_LIMITS.text.mediaTrackName
+      return !mediaTracks.some((track) => track.id === payload.track!.id)
+        && payload.track.id === (payload.trackId ?? payload.track.id)
+        && isValidMediaTrack(payload.track)
         && payload.audioAsset?.id === payload.track.audioId
         && isValidAudioAsset(payload.audioAsset);
     }
@@ -189,6 +205,47 @@ sample({
   target: songDeletionApplied,
 });
 
+function isValidSongAddition(
+  songs: Song[],
+  currentTracks: MediaTrack[],
+  currentAssets: AudioAsset[],
+  payload: { song: Song; mediaTracks: MediaTrack[]; audioAssets: AudioAsset[] },
+) {
+  const { song, mediaTracks, audioAssets } = payload;
+  if (songs.some((item) => item.id === song.id)) return false;
+  if (
+    !song.id
+    || song.id.length > DATA_LIMITS.text.id
+    || song.artist.length > DATA_LIMITS.text.artist
+    || song.title.length > DATA_LIMITS.text.songTitle
+    || (!song.artist.trim() && !song.title.trim())
+    || !isValidTimestamp(song.createdAt)
+    || !isValidTimestamp(song.updatedAt)
+  ) return false;
+
+  if (audioAssets.some((asset) => !isValidAudioAsset(asset))) return false;
+  const availableAudioIds = new Set([...currentAssets, ...audioAssets].map((asset) => asset.id));
+  const currentTrackIds = new Set(currentTracks.map((track) => track.id));
+  const additionTrackIds = new Set<string>();
+  for (const track of mediaTracks) {
+    if (!isValidMediaTrack(track) || currentTrackIds.has(track.id) || additionTrackIds.has(track.id) || !availableAudioIds.has(track.audioId)) return false;
+    additionTrackIds.add(track.id);
+  }
+
+  const availableTrackIds = new Set([...currentTrackIds, ...additionTrackIds]);
+  return [song.minusTrackId, song.plusTrackId].every((trackId) => !trackId || availableTrackIds.has(trackId));
+}
+
+function isValidMediaTrack(track: MediaTrack) {
+  return Boolean(track.id)
+    && track.id.length <= DATA_LIMITS.text.id
+    && track.name.trim().length > 0
+    && track.name.length <= DATA_LIMITS.text.mediaTrackName
+    && isSha256(track.audioId)
+    && isValidTimestamp(track.createdAt)
+    && isValidTimestamp(track.updatedAt);
+}
+
 function isValidAudioAsset(audioAsset: AudioAsset) {
   return audioAsset.id === audioAsset.sha256
     && isSha256(audioAsset.id)
@@ -207,6 +264,6 @@ function mergeAudioAssets(current: AudioAsset[], additions: AudioAsset[]) {
 function mergeById<T extends { id: string }>(current: T[], additions: T[]) {
   if (additions.length === 0) return current;
   const byId = new Map(current.map((item) => [item.id, item]));
-  additions.forEach((item) => byId.set(item.id, item));
+  additions.forEach((item) => { if (!byId.has(item.id)) byId.set(item.id, item); });
   return [...byId.values()];
 }

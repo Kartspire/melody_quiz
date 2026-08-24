@@ -195,14 +195,14 @@ export function AudioQuestion({
                   </button>
 
                   <button
-                    className={penalizedNext ? 'answer-button answer-button--wrong answer-button--active' : 'answer-button answer-button--wrong'}
-                    disabled={excluded}
+                    className={answeredIncorrectly ? 'answer-button answer-button--wrong answer-button--active' : 'answer-button answer-button--wrong'}
+                    disabled={cannotAnswer}
                     onClick={() => {
                       audioRef.current?.pause();
                       onIncorrect(team.id);
                     }}
                   >
-                    {penalizedNext ? '↶ Отменить ошибку' : '✕ Неверно'}
+                    {answeredIncorrectly ? '✕ Уже отвечала' : '✕ Неверно'}
                   </button>
                 </div>
               );
