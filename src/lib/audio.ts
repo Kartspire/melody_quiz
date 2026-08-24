@@ -29,7 +29,8 @@ export async function canonicalizeAudioAsset(asset: Partial<AudioAsset> & { id?:
 
 export async function validateAudioBlob(blob: Blob, name: string, type: string, verifyBrowserPlayback: boolean): Promise<void> {
   if (!(blob instanceof Blob) || blob.size <= 0) throw new Error(`Аудиофайл «${name}» пустой или повреждён.`);
-  if (blob.size > DATA_LIMITS.audioFileBytes) throw new Error(`Аудиофайл «${name}» превышает лимит ${formatBytes(DATA_LIMITS.audioFileBytes)}.`);
+  const maxBytes = verifyBrowserPlayback ? DATA_LIMITS.audioUploadBytes : DATA_LIMITS.audioFileBytes;
+  if (blob.size > maxBytes) throw new Error(`Аудиофайл «${name}» превышает лимит ${formatBytes(maxBytes)}.`);
 
   const header = new Uint8Array(await blob.slice(0, Math.min(blob.size, 32)).arrayBuffer());
   if (!matchesKnownAudioSignature(header, type, name)) {

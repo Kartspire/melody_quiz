@@ -1631,3 +1631,21 @@ p { color: var(--muted); line-height: 1.6; }
   .game-launch-dialog__actions { flex-direction: column; }
   .game-launch-dialog__actions > button { width: 100%; }
 }
+
+
+.media-load-more { align-self: center; margin: 8px auto 0; }
+.media-audio-preview-wrap { display: grid; gap: 8px; }
+.media-audio-preview-toggle { justify-self: start; }
+.stored-audio-field__picker { width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-load-more { justify-self: start; }
+.editor-load-more--categories { grid-column: 1 / -1; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+  .vinyl, .loader-disc { animation: none !important; }
+}

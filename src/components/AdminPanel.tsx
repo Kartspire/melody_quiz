@@ -25,7 +25,7 @@ import {
   teamChanged,
   teamRemoved,
 } from '../model/game';
-import { DATA_LIMITS, GAME_LIMITS } from '../model/limits';
+import { DATA_LIMITS, EDITOR_LIMITS, GAME_LIMITS } from '../model/limits';
 import { DraftNumberInput } from './DraftNumberInput';
 import { SongForm } from './SongForm';
 import {
@@ -47,6 +47,8 @@ export function AdminPanel() {
   const [tab, setTab] = useState<EditorTab>('structure');
   const [picker, setPicker] = useState<{ roundId: string; categoryId: string; questionId: string; songId?: string } | null>(null);
   const [showInterRoundLibrary, setShowInterRoundLibrary] = useState(false);
+  const [visibleCategoryCounts, setVisibleCategoryCounts] = useState<Record<string, number>>({});
+  const [visibleQuestionCounts, setVisibleQuestionCounts] = useState<Record<string, number>>({});
   const songById = useMemo(() => new Map(songs.map((song) => [song.id, song])), [songs]);
 
   if (!config) return null;
@@ -152,7 +154,7 @@ export function AdminPanel() {
                   </div>
 
                   <div className="categories-editor">
-                    {round.categories.map((category) => (
+                    {round.categories.slice(0, visibleCategoryCounts[round.id] ?? EDITOR_LIMITS.categoriesPerRound).map((category) => (
                       <section className="category-editor" key={category.id}>
                         <div className="category-editor__header">
                           <input
@@ -174,7 +176,7 @@ export function AdminPanel() {
                         </div>
 
                         <div className="question-list">
-                          {category.questions.map((question) => {
+                          {category.questions.slice(0, visibleQuestionCounts[category.id] ?? EDITOR_LIMITS.questionsPerCategory).map((question) => {
                             const song = question.songId ? songById.get(question.songId) : undefined;
                             return (
                               <article className="question-editor question-editor--library" key={question.id}>
@@ -211,16 +213,35 @@ export function AdminPanel() {
                             );
                           })}
                         </div>
-                        <button className="add-question" disabled={category.questions.length >= GAME_LIMITS.questionsPerCategory} onClick={() => questionAdded({ roundId: round.id, categoryId: category.id })}>+ Добавить вопрос</button>
+                        {category.questions.length > (visibleQuestionCounts[category.id] ?? EDITOR_LIMITS.questionsPerCategory) && (
+                          <button
+                            className="secondary-button editor-load-more"
+                            onClick={() => setVisibleQuestionCounts((counts) => ({
+                              ...counts,
+                              [category.id]: (counts[category.id] ?? EDITOR_LIMITS.questionsPerCategory) + EDITOR_LIMITS.questionsPerCategory,
+                            }))}
+                          >Показать ещё вопросы</button>
+                        )}
+                        <button className="add-question" disabled={category.questions.length >= EDITOR_LIMITS.questionsPerCategory} onClick={() => questionAdded({ roundId: round.id, categoryId: category.id })}>+ Добавить вопрос</button>
                       </section>
                     ))}
 
+                    {round.categories.length > (visibleCategoryCounts[round.id] ?? EDITOR_LIMITS.categoriesPerRound) && (
+                      <button
+                        className="secondary-button editor-load-more editor-load-more--categories"
+                        onClick={() => setVisibleCategoryCounts((counts) => ({
+                          ...counts,
+                          [round.id]: (counts[round.id] ?? EDITOR_LIMITS.categoriesPerRound) + EDITOR_LIMITS.categoriesPerRound,
+                        }))}
+                      >Показать ещё категории</button>
+                    )}
+
                     <button
                       className="add-structure-card add-structure-card--category"
-                      disabled={round.categories.length >= GAME_LIMITS.categoriesPerRound}
+                      disabled={round.categories.length >= EDITOR_LIMITS.categoriesPerRound}
                       onClick={() => categoryAdded({ roundId: round.id })}
                     >
-                      <span>＋</span><strong>Добавить категорию</strong><small>Максимум {GAME_LIMITS.categoriesPerRound} категорий в раунде</small>
+                      <span>＋</span><strong>Добавить категорию</strong><small>Максимум {EDITOR_LIMITS.categoriesPerRound} категорий в раунде</small>
                     </button>
                   </div>
                 </article>

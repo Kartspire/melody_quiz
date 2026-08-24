@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { $mediaTracks, mediaTrackAdded } from '../model/game';
 import { createAudioAsset, createMediaTrack } from '../model/defaults';
@@ -14,6 +14,8 @@ import {
   PickerToolbar,
 } from './PickerDialog';
 
+const PICKER_PAGE_SIZE = 100;
+
 export function MediaTrackPicker({
   currentTrackId,
   onSelect,
@@ -26,12 +28,19 @@ export function MediaTrackPicker({
   const tracks = useUnit($mediaTracks);
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
+  const [visibleCount, setVisibleCount] = useState(PICKER_PAGE_SIZE);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const filtered = useMemo(() => {
     const normalized = normalizeSearchText(query);
     return normalized ? tracks.filter((track) => normalizeSearchText(track.name).includes(normalized)) : tracks;
   }, [query, tracks]);
+
+  useEffect(() => {
+    setVisibleCount(PICKER_PAGE_SIZE);
+  }, [query]);
+
+  const visibleTracks = filtered.slice(0, visibleCount);
 
   const upload = async (file?: File) => {
     if (!file) return;
@@ -60,7 +69,7 @@ export function MediaTrackPicker({
       <PickerList>
         {filtered.length === 0 ? (
           <PickerEmpty>Аудиотреков пока нет. Можно загрузить новый прямо здесь.</PickerEmpty>
-        ) : filtered.map((track) => (
+        ) : visibleTracks.map((track) => (
           <PickerRow
             key={track.id}
             selected={track.id === currentTrackId}
@@ -70,6 +79,9 @@ export function MediaTrackPicker({
             meta={track.id === currentTrackId ? 'Выбран' : 'Выбрать'}
           />
         ))}
+        {visibleTracks.length < filtered.length && (
+          <button className="secondary-button media-load-more" onClick={() => setVisibleCount((count) => count + PICKER_PAGE_SIZE)}>Показать ещё</button>
+        )}
       </PickerList>
 
       {currentTrackId && (

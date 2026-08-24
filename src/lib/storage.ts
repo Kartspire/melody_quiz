@@ -169,7 +169,14 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
       throw new StorageConflictError();
     }
 
-    applyStateDiff(transaction, lastSavedState, state);
+    const dataChanged = applyStateDiff(transaction, lastSavedState, state);
+    const metaChanged = !lastSavedState || lastSavedState.activeGameId !== state.activeGameId;
+    if (!dataChanged && !metaChanged) {
+      await transactionDone(transaction);
+      lastSavedState = state;
+      return;
+    }
+
     metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
     metaStore.put(true, STATE_INITIALIZED_KEY);
     metaStore.put(actualRevision + 1, REVISION_KEY);
@@ -222,41 +229,43 @@ async function rewriteCanonicalState(state: PersistedState, expectedRevision: nu
 }
 
 function applyStateDiff(transaction: IDBTransaction, previous: PersistedState | null, next: PersistedState) {
-  syncStore(
+  let changed = false;
+  changed = syncStore(
     transaction.objectStore(GAMES_STORE),
     previous?.games ?? [],
     next.games,
     (item) => item.id,
     (before, after) => before.updatedAt === after.updatedAt && before === after,
-  );
-  syncStore(
+  ) || changed;
+  changed = syncStore(
     transaction.objectStore(SONGS_STORE),
     previous?.songs ?? [],
     next.songs,
     (item) => item.id,
     (before, after) => before.updatedAt === after.updatedAt && before === after,
-  );
-  syncStore(
+  ) || changed;
+  changed = syncStore(
     transaction.objectStore(MEDIA_TRACKS_STORE),
     previous?.mediaTracks ?? [],
     next.mediaTracks,
     (item) => item.id,
     (before, after) => before.updatedAt === after.updatedAt && before === after,
-  );
-  syncStore(
+  ) || changed;
+  changed = syncStore(
     transaction.objectStore(SESSIONS_STORE),
     previous?.sessions ?? [],
     next.sessions,
     (item) => item.gameId,
     (before, after) => before === after || JSON.stringify(before) === JSON.stringify(after),
-  );
-  syncStore(
+  ) || changed;
+  changed = syncStore(
     transaction.objectStore(AUDIO_STORE),
     previous?.audioAssets ?? [],
     next.audioAssets,
     (item) => item.id,
     (before, after) => before.id === after.id,
-  );
+  ) || changed;
+  return changed;
 }
 
 function syncStore<T>(
@@ -268,14 +277,22 @@ function syncStore<T>(
 ) {
   const previousById = new Map(previous.map((item) => [keyOf(item), item]));
   const nextIds = new Set(next.map(keyOf));
+  let changed = false;
   for (const item of previous) {
     const key = keyOf(item);
-    if (!nextIds.has(key)) store.delete(key);
+    if (!nextIds.has(key)) {
+      store.delete(key);
+      changed = true;
+    }
   }
   for (const item of next) {
     const previousItem = previousById.get(keyOf(item));
-    if (!previousItem || !equal(previousItem, item)) store.put(item);
+    if (!previousItem || !equal(previousItem, item)) {
+      store.put(item);
+      changed = true;
+    }
   }
+  return changed;
 }
 
 type StoredSong = Song & { minusAudioId?: string; plusAudioId?: string; minusTrackId?: string; plusTrackId?: string };

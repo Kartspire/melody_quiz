@@ -121,6 +121,7 @@ export function normalizeSession(rawSession: GameSession | LegacyCompatibleSessi
     stageIndex,
     stageId,
     activeQuestionId: typeof session.activeQuestionId === 'string' ? session.activeQuestionId : null,
+    pausedQuestionId: typeof session.pausedQuestionId === 'string' ? session.pausedQuestionId : null,
     completedQuestionIds: Array.isArray(session.completedQuestionIds) ? session.completedQuestionIds : [],
     completedInterRoundIds: Array.isArray(session.completedInterRoundIds) ? session.completedInterRoundIds : [],
     interRound,
@@ -132,6 +133,9 @@ export function normalizeSession(rawSession: GameSession | LegacyCompatibleSessi
       ? session.currentIncorrectTeamIds
       : inferredCurrentIncorrectTeamIds,
     nextExcludedTeamIds,
+    updatedAt: Number.isFinite(session.updatedAt) && (session.updatedAt as number) > 0
+      ? session.updatedAt as number
+      : config?.createdAt ?? Date.now(),
   };
 }
 
@@ -141,7 +145,7 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
   const questionIds = new Set(config.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions.map((question) => question.id))));
   const interRoundIds = new Set(config.interRounds.map((interRound) => interRound.id));
   const completedQuestionIds = unique(session.completedQuestionIds.filter((id) => questionIds.has(id)));
-  const completedInterRoundIds = unique(session.completedInterRoundIds.filter((id) => interRoundIds.has(id)));
+  let completedInterRoundIds = unique(session.completedInterRoundIds.filter((id) => interRoundIds.has(id)));
   const scores = Object.fromEntries(config.teams.map((team) => [team.id, Number.isSafeInteger(session.scores?.[team.id]) ? session.scores[team.id] : 0]));
 
   let stageIndex = resolveStageIndex(config, session);
@@ -155,12 +159,25 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
     && activeRoundQuestionIds.has(session.activeQuestionId)
       ? session.activeQuestionId
       : null;
+  let pausedQuestionId = !activeQuestionId
+    && activeStage?.kind === 'round'
+    && session.pausedQuestionId
+    && activeRoundQuestionIds.has(session.pausedQuestionId)
+    && !completedQuestionIds.includes(session.pausedQuestionId)
+      ? session.pausedQuestionId
+      : null;
 
-  let interRound = reconcileInterRoundProgress(config, activeStage, session.interRound);
+  if (activeStage?.kind === 'interRound' && isRemovedCurrentLastInterRoundItem(config, activeStage, session.interRound)) {
+    completedInterRoundIds = unique([...completedInterRoundIds, activeStage.interRoundId]);
+  }
+  let interRound = completedInterRoundIds.includes(activeStage?.kind === 'interRound' ? activeStage.interRoundId : '')
+    ? null
+    : reconcileInterRoundProgress(config, activeStage, session.interRound);
 
   // Editing a running game can make the current stage already complete. Move forward
   // deterministically so the player cannot get stuck on an empty/completed board.
   if (session.started && !activeQuestionId) {
+    const previousStageIndex = stageIndex;
     while (stageIndex < config.stages.length) {
       const stage = config.stages[stageIndex];
       const complete = stage.kind === 'round'
@@ -169,10 +186,13 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
       if (!complete) break;
       stageIndex += 1;
     }
-    stageId = config.stages[stageIndex]?.id ?? null;
-    activeStage = config.stages[stageIndex];
-    if (activeStage?.kind !== 'round') activeQuestionId = null;
-    interRound = reconcileInterRoundProgress(config, activeStage, interRound);
+    if (stageIndex !== previousStageIndex) {
+      stageId = config.stages[stageIndex]?.id ?? null;
+      activeStage = config.stages[stageIndex];
+      if (activeStage?.kind !== 'round') activeQuestionId = null;
+      pausedQuestionId = null;
+      interRound = reconcileInterRoundProgress(config, activeStage, interRound);
+    }
   }
 
   const awardedTeamId = session.awardedTeamId && teamIds.has(session.awardedTeamId)
@@ -186,14 +206,19 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
     stageIndex,
     stageId,
     activeQuestionId,
+    pausedQuestionId,
     completedQuestionIds,
     completedInterRoundIds,
     interRound,
     scores,
     awardedTeamId: activeQuestionId ? awardedTeamId : null,
     answerRevealed,
-    activeExcludedTeamIds: unique(session.activeExcludedTeamIds.filter((id) => teamIds.has(id))),
-    currentIncorrectTeamIds: unique(session.currentIncorrectTeamIds.filter((id) => teamIds.has(id))),
+    activeExcludedTeamIds: activeQuestionId || pausedQuestionId
+      ? unique(session.activeExcludedTeamIds.filter((id) => teamIds.has(id)))
+      : [],
+    currentIncorrectTeamIds: activeQuestionId || pausedQuestionId
+      ? unique(session.currentIncorrectTeamIds.filter((id) => teamIds.has(id)))
+      : [],
     nextExcludedTeamIds: unique(session.nextExcludedTeamIds.filter((id) => teamIds.has(id))),
   };
 }
@@ -204,6 +229,19 @@ function resolveStageIndex(config: GameConfig, session: GameSession) {
     if (byId >= 0) return byId;
   }
   return Math.max(0, Math.min(session.stageIndex, config.stages.length));
+}
+
+function isRemovedCurrentLastInterRoundItem(
+  config: GameConfig,
+  activeStage: GameStage | undefined,
+  progress: InterRoundSession | null,
+) {
+  if (activeStage?.kind !== 'interRound' || !progress || progress.interRoundId !== activeStage.interRoundId || !progress.itemId) return false;
+  const interRound = config.interRounds.find((item) => item.id === activeStage.interRoundId);
+  if (!interRound) return false;
+  const items = interRound.templateId === 'continueLyrics' ? interRound.tasks : interRound.stages;
+  const stillExists = items.some((item) => item.id === progress.itemId);
+  return !stillExists && progress.taskIndex >= items.length;
 }
 
 function reconcileInterRoundProgress(

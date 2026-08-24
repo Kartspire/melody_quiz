@@ -119,6 +119,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   stageIndex: 0,
   stageId: config.stages[0]?.id ?? null,
   activeQuestionId: null,
+  pausedQuestionId: null,
   completedQuestionIds: [],
   completedInterRoundIds: [],
   interRound: null,
@@ -128,6 +129,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   activeExcludedTeamIds: [],
   currentIncorrectTeamIds: [],
   nextExcludedTeamIds: [],
+  updatedAt: Date.now(),
 });
 
 export const createAudioAsset = (file: File) => createContentAddressedAudioAsset(file);
@@ -264,6 +266,7 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     stageIndex,
     stageId: stages[stageIndex]?.id ?? null,
     activeQuestionId: legacy.session.activeQuestionId ?? null,
+    pausedQuestionId: null,
     completedQuestionIds: legacy.session.completedQuestionIds ?? [],
     completedInterRoundIds: [],
     interRound: null,
@@ -273,6 +276,7 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     activeExcludedTeamIds: legacy.session.activeExcludedTeamIds ?? [],
     currentIncorrectTeamIds: legacy.session.currentIncorrectTeamIds ?? [],
     nextExcludedTeamIds: legacy.session.nextExcludedTeamIds ?? [],
+    updatedAt: now,
   };
 
   return {

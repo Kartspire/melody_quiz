@@ -1,7 +1,8 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react';
 
 export function ActionMenu({ label, children, className = '' }: { label: string; children: ReactNode; className?: string }) {
   const [open, setOpen] = useState(false);
+  const panelId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -49,15 +50,17 @@ export function ActionMenu({ label, children, className = '' }: { label: string;
         type="button"
         className="action-menu__trigger"
         aria-label={label}
-        aria-haspopup="menu"
         aria-expanded={open}
+        aria-controls={panelId}
         onClick={() => setOpen((value) => !value)}
       >⋯</button>
       {open && (
         <div
+          id={panelId}
           ref={panelRef}
           className="action-menu__panel"
-          role="menu"
+          role="group"
+          aria-label={label}
           onClick={(event) => {
             if ((event.target as HTMLElement).closest('button:not(:disabled)')) setOpen(false);
           }}

@@ -8,6 +8,12 @@ export const GAME_LIMITS = {
   commonThemeStages: 50,
 } as const;
 
+/** Creation caps for the eager editor UI. Stored/imported games keep the wider GAME_LIMITS for backwards compatibility. */
+export const EDITOR_LIMITS = {
+  categoriesPerRound: 20,
+  questionsPerCategory: 20,
+} as const;
+
 export const INTER_ROUND_LIMITS = {
   continueLyrics: {
     requiredWordsCount: { min: 1, max: 100 },
@@ -17,14 +23,15 @@ export const INTER_ROUND_LIMITS = {
 
 export const DATA_LIMITS = {
   audioFileBytes: 512 * 1024 * 1024,
-  packageBytes: 4 * 1024 * 1024 * 1024,
+  audioUploadBytes: 128 * 1024 * 1024,
+  packageBytes: 2 * 1024 * 1024 * 1024,
   manifestBytes: 2 * 1024 * 1024,
   gameJsonBytes: 10 * 1024 * 1024,
   songsJsonBytes: 20 * 1024 * 1024,
   tracksJsonBytes: 20 * 1024 * 1024,
-  packageFiles: 20_000,
-  packageSongs: 10_000,
-  packageTracks: 20_000,
+  packageFiles: 10_000,
+  packageSongs: 5_000,
+  packageTracks: 10_000,
   text: {
     gameTitle: 200,
     roundName: 200,

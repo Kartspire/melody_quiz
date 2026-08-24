@@ -123,6 +123,8 @@ export type GameSession = {
   /** Stable identity of the active stage. Null means the game is finished. */
   stageId: string | null;
   activeQuestionId: string | null;
+  /** Question that was closed without completion and can resume its current attempt state. */
+  pausedQuestionId: string | null;
   completedQuestionIds: string[];
   completedInterRoundIds: string[];
   interRound: InterRoundSession | null;
@@ -132,6 +134,8 @@ export type GameSession = {
   activeExcludedTeamIds: string[];
   currentIncorrectTeamIds: string[];
   nextExcludedTeamIds: string[];
+  /** Last meaningful gameplay/session change. Used to choose the most recently played saved game. */
+  updatedAt: number;
 };
 
 export type PersistedState = {

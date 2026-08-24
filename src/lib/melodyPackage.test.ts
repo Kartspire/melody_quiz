@@ -231,6 +231,24 @@ describe('melody package', () => {
     expect(prepared.songs[0].minusTrackId).toBe(prepared.mediaTracks[0].id);
   });
 
+  it('allows exporting and importing an unfinished draft game as a backup', async () => {
+    const game = createGame('Черновик');
+    const interRound = createContinueLyricsInterRound();
+    interRound.tasks[0] = {
+      ...interRound.tasks[0],
+      trackId: undefined,
+      answerText: '',
+    };
+    game.interRounds = [interRound];
+    game.stages = [game.stages[0], createInterRoundStage(interRound.id)];
+
+    const exported = await exportGamePackage(game, [], [], []);
+    const parsed = await parseMelodyPackage(exported.blob);
+
+    expect(parsed.game?.id).toBe(game.id);
+    expect(parsed.game?.interRounds[0].templateId).toBe('continueLyrics');
+  });
+
   it('rejects an archive with tampered bytes', async () => {
     const { song, minusTrack, plusTrack, minus, plus } = await makeFixture();
     const exported = await exportLibraryPackage([song], [minusTrack, plusTrack], [minus, plus]);

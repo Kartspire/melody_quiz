@@ -21,6 +21,7 @@ type DialogProps = {
 
 export function Dialog({ eyebrow, title, description, onClose, children, className = '' }: DialogProps) {
   const titleId = useId();
+  const descriptionId = useId();
   const dialogRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   useEscapeClose(onClose);
@@ -76,6 +77,7 @@ export function Dialog({ eyebrow, title, description, onClose, children, classNa
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         onKeyDown={trapFocus}
       >
@@ -83,7 +85,7 @@ export function Dialog({ eyebrow, title, description, onClose, children, classNa
           <div>
             {eyebrow && <span className="eyebrow">{eyebrow}</span>}
             <h2 id={titleId}>{title}</h2>
-            {description && <div className="dialog__description">{description}</div>}
+            {description && <div id={descriptionId} className="dialog__description">{description}</div>}
           </div>
           <button type="button" className="icon-button dialog__close" aria-label="Закрыть" onClick={onClose}>×</button>
         </div>

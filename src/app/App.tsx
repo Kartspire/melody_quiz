@@ -36,10 +36,10 @@ export function App() {
   ]);
 
   const savedSessionGames = useMemo(
-    () => games.filter((game) => hasSessionProgress(sessions[game.id])).sort((a, b) => b.updatedAt - a.updatedAt),
+    () => games.filter((game) => hasSessionProgress(sessions[game.id])).sort((a, b) => (sessions[b.id]?.updatedAt ?? b.updatedAt) - (sessions[a.id]?.updatedAt ?? a.updatedAt)),
     [games, sessions],
   );
-  const sidebarGame = activeGame && hasSessionProgress(sessions[activeGame.id]) ? activeGame : savedSessionGames[0] ?? null;
+  const sidebarGame = savedSessionGames[0] ?? null;
   const sidebarSession = sidebarGame ? sessions[sidebarGame.id] : null;
   const sidebarFinished = Boolean(sidebarGame && sidebarSession && sidebarSession.stageIndex >= sidebarGame.stages.length);
 

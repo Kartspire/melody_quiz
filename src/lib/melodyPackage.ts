@@ -5,7 +5,7 @@ import { createSession } from '../model/defaults';
 import { normalizeGameConfig } from '../model/migrations';
 import { getInterRoundTrackIds, remapInterRoundTrackIds } from '../interRounds/templates';
 import { DATA_LIMITS } from '../model/limits';
-import { assertValidGameStructure, assertValidMediaTrack, assertValidSong, getGameStartIssues, isSha256 } from '../model/validation';
+import { assertValidMediaTrack, assertValidSong, getGameStartIssues, getGameStorageIssues, isSha256 } from '../model/validation';
 import type { AudioAsset, GameConfig, MediaTrack, PersistedState, Song } from '../model/types';
 import {
   MELODY_PACKAGE_FORMAT_VERSION,
@@ -83,7 +83,7 @@ export async function exportGamePackage(
   mediaTracks: MediaTrack[],
   audioAssets: AudioAsset[],
 ): Promise<{ blob: Blob; filename: string }> {
-  assertValidGameStructure(game);
+  assertDraftGameStructure(game);
   const usedSongIds = new Set(
     game.rounds.flatMap((round) =>
       round.categories.flatMap((category) =>
@@ -137,7 +137,7 @@ export async function exportLibraryPackage(
 
 export async function parseMelodyPackage(file: Blob): Promise<ParsedMelodyPackage> {
   if (!(file instanceof Blob) || file.size <= 0) throw new Error('Выбран пустой файл.');
-  if (file.size > DATA_LIMITS.packageBytes) throw new Error('Архив превышает максимальный поддерживаемый размер 4 ГБ.');
+  if (file.size > DATA_LIMITS.packageBytes) throw new Error('Архив превышает максимальный поддерживаемый размер 2 ГБ.');
 
   const zipEntries = await readStoredZip(file);
   if (zipEntries.size > DATA_LIMITS.packageFiles + 1) throw new Error('В архиве слишком много файлов.');
@@ -190,7 +190,7 @@ export async function parseMelodyPackage(file: Blob): Promise<ParsedMelodyPackag
     if (gameBlob.size > DATA_LIMITS.gameJsonBytes) throw new Error('game.json имеет недопустимый размер.');
     const parsedGame = parseJson<GameConfig>(await gameBlob.text(), 'game.json');
     game = normalizeGameConfig(parsedGame).game;
-    assertValidGameStructure(game);
+    assertDraftGameStructure(game);
     const packageSongIds = new Set(songs.map((song) => song.id));
     const missingSongReference = game.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions)).find((question) => question.songId && !packageSongIds.has(question.songId));
     if (missingSongReference?.songId) throw new Error(`В game.json есть ссылка на отсутствующую песню «${missingSongReference.songId}».`);
@@ -515,7 +515,7 @@ function assertExportBounds(entries: ExportEntry[]) {
   let totalSize = 0;
   for (const entry of entries) {
     totalSize += entry.blob.size;
-    if (!Number.isSafeInteger(totalSize) || totalSize > DATA_LIMITS.packageBytes) throw new Error('Суммарный размер архива превышает допустимый лимит 4 ГБ.');
+    if (!Number.isSafeInteger(totalSize) || totalSize > DATA_LIMITS.packageBytes) throw new Error('Суммарный размер архива превышает допустимый лимит 2 ГБ.');
   }
 }
 
@@ -555,6 +555,11 @@ function uniqueCopyTitle(title: string, games: GameConfig[]) {
     if (!used.has(candidate)) return candidate;
     index += 1;
   }
+}
+
+function assertDraftGameStructure(game: GameConfig) {
+  const issues = getGameStorageIssues(game);
+  if (issues.length > 0) throw new Error(`Некорректная структура game.json: ${issues[0]}`);
 }
 
 function safeFilename(value: string) {

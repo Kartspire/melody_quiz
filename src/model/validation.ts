@@ -370,7 +370,7 @@ export function assertValidPersistedState(state: PersistedState): void {
     const questionIds = new Set(game.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions.map((question) => question.id))));
     const interRoundIds = new Set(game.interRounds.map((interRound) => interRound.id));
 
-    if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || session.stageIndex > game.stages.length || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean') {
+    if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || session.stageIndex > game.stages.length || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean' || !isValidTimestamp(session.updatedAt)) {
       throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
     }
     const expectedStageId = game.stages[session.stageIndex]?.id ?? null;
@@ -391,11 +391,18 @@ export function assertValidPersistedState(state: PersistedState): void {
     }
 
     const activeStage = game.stages[session.stageIndex];
+    const activeRound = activeStage?.kind === 'round'
+      ? game.rounds.find((item) => item.id === activeStage.roundId)
+      : undefined;
+    const activeRoundQuestionIds = new Set(activeRound?.categories.flatMap((category) => category.questions.map((question) => question.id)) ?? []);
     if (session.activeQuestionId !== null) {
       if (!isBoundedText(session.activeQuestionId, DATA_LIMITS.text.id) || !activeStage || activeStage.kind !== 'round') throw new Error('Игровая сессия содержит некорректный активный вопрос.');
-      const round = game.rounds.find((item) => item.id === activeStage.roundId);
-      const activeRoundQuestionIds = new Set(round?.categories.flatMap((category) => category.questions.map((question) => question.id)) ?? []);
       if (!activeRoundQuestionIds.has(session.activeQuestionId)) throw new Error('Активный вопрос не относится к текущему раунду.');
+    }
+    if (session.pausedQuestionId !== null) {
+      if (session.activeQuestionId !== null || !isBoundedText(session.pausedQuestionId, DATA_LIMITS.text.id) || !activeRoundQuestionIds.has(session.pausedQuestionId) || session.completedQuestionIds.includes(session.pausedQuestionId)) {
+        throw new Error('Игровая сессия содержит некорректный приостановленный вопрос.');
+      }
     }
     if (session.awardedTeamId !== null && (!teamIds.has(session.awardedTeamId) || !session.activeQuestionId)) throw new Error('Игровая сессия содержит некорректную команду-победителя вопроса.');
 

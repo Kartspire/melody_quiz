@@ -68,13 +68,21 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         started: true,
         activeQuestionId: questionId,
+        pausedQuestionId: null,
         awardedTeamId: null,
         answerRevealed: false,
-        activeExcludedTeamIds: unique(session.nextExcludedTeamIds),
-        currentIncorrectTeamIds: [],
-        nextExcludedTeamIds: [],
+        activeExcludedTeamIds: session.pausedQuestionId === questionId
+          ? unique(session.activeExcludedTeamIds)
+          : unique(session.nextExcludedTeamIds),
+        currentIncorrectTeamIds: session.pausedQuestionId === questionId
+          ? unique(session.currentIncorrectTeamIds)
+          : [],
+        nextExcludedTeamIds: session.pausedQuestionId === questionId
+          ? unique(session.nextExcludedTeamIds)
+          : [],
       },
     };
   },
@@ -84,21 +92,21 @@ sample({
 sample({
   clock: questionClosed,
   source: combine({ game: $activeGame, sessions: $sessions }),
-  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]),
+  filter: ({ game, sessions }) => Boolean(game && sessions[game.id]?.activeQuestionId),
   fn: ({ game, sessions }, { completed }) => {
     const session = sessions[game!.id];
     return {
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         activeQuestionId: null,
+        pausedQuestionId: completed ? null : session.activeQuestionId,
         awardedTeamId: null,
         answerRevealed: false,
-        activeExcludedTeamIds: [],
-        currentIncorrectTeamIds: [],
-        nextExcludedTeamIds: completed
-          ? session.nextExcludedTeamIds
-          : unique(session.activeExcludedTeamIds),
+        activeExcludedTeamIds: completed ? [] : unique(session.activeExcludedTeamIds),
+        currentIncorrectTeamIds: completed ? [] : unique(session.currentIncorrectTeamIds),
+        nextExcludedTeamIds: unique(session.nextExcludedTeamIds),
       },
     };
   },
@@ -127,6 +135,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         awardedTeamId: teamId,
         answerRevealed: true,
         completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId!]),
@@ -160,6 +169,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         currentIncorrectTeamIds: unique([...session.currentIncorrectTeamIds, teamId]),
         nextExcludedTeamIds: unique([...session.nextExcludedTeamIds, teamId]),
       },
@@ -186,6 +196,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         awardedTeamId: null,
         answerRevealed: true,
         completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId!]),
@@ -202,7 +213,8 @@ sample({
     game
     && sessions[game.id]
     && game.teams.some((team) => team.id === teamId)
-    && Number.isSafeInteger(score),
+    && Number.isSafeInteger(score)
+    && sessions[game.id].scores[teamId] !== score,
   ),
   fn: ({ game, sessions }, { teamId, score }) => {
     const session = sessions[game!.id];
@@ -210,6 +222,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         scores: { ...session.scores, [teamId]: score },
       },
     };
@@ -233,9 +246,11 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
         stageId: game!.stages[session.stageIndex + 1]?.id ?? null,
         activeQuestionId: null,
+        pausedQuestionId: null,
         interRound: null,
         awardedTeamId: null,
         answerRevealed: false,
@@ -263,7 +278,11 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         started: true,
+        pausedQuestionId: null,
+        activeExcludedTeamIds: [],
+        currentIncorrectTeamIds: [],
         interRound: {
           interRoundId: interRound.id,
           phase: 'play' as const,
@@ -301,6 +320,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         interRound: session.interRound
           ? { ...session.interRound, trackIndex: Math.min(session.interRound.trackIndex + 1, 4) }
           : null,
@@ -328,6 +348,7 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         interRound: session.interRound
           ? { ...session.interRound, phase: 'answer' as const }
           : null,
@@ -358,6 +379,7 @@ sample({
         ...sessions,
         [game!.id]: {
           ...session,
+          updatedAt: Date.now(),
           interRound: {
             interRoundId: interRound.id,
             phase: 'play' as const,
@@ -374,10 +396,12 @@ sample({
       ...sessions,
       [game!.id]: {
         ...session,
+        updatedAt: Date.now(),
         stageIndex: Math.min(session.stageIndex + 1, game!.stages.length),
         stageId: game!.stages[session.stageIndex + 1]?.id ?? null,
         completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
         interRound: null,
+        pausedQuestionId: null,
       },
     };
   },

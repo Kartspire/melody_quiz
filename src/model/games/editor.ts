@@ -8,7 +8,7 @@ import {
   createSession,
   createTeam,
 } from '../defaults';
-import { DATA_LIMITS, GAME_LIMITS } from '../limits';
+import { DATA_LIMITS, EDITOR_LIMITS, GAME_LIMITS } from '../limits';
 import {
   getNextQuestionPoints,
   isPersistableTeamName,
@@ -90,7 +90,7 @@ $games.on(gameConfigUpdated, (games, updated) =>
 sample({
   clock: gameTitleChanged,
   source: activeGameSource,
-  filter: ({ game }, title) => Boolean(game && title.length <= DATA_LIMITS.text.gameTitle),
+  filter: ({ game }, title) => Boolean(game && title.length <= DATA_LIMITS.text.gameTitle && game.title !== title),
   fn: ({ game }, title) => touchGame({ ...game!, title }),
   target: gameConfigUpdated,
 });
@@ -127,7 +127,7 @@ sample({
 sample({
   clock: roundNameChanged,
   source: activeGameSource,
-  filter: ({ game }, { name }) => Boolean(game && name.length <= DATA_LIMITS.text.roundName),
+  filter: ({ game }, { roundId, name }) => Boolean(game && name.length <= DATA_LIMITS.text.roundName && game.rounds.some((round) => round.id === roundId && round.name !== name)),
   fn: ({ game }, payload) => touchGame({
     ...game!,
     rounds: game!.rounds.map((round) => round.id === payload.roundId ? { ...round, name: payload.name } : round),
@@ -190,7 +190,7 @@ sample({
   filter: ({ game }, { interRoundId, title }) => Boolean(
     game
     && title.length <= DATA_LIMITS.text.interRoundTitle
-    && game.interRounds.some((item) => item.id === interRoundId),
+    && game.interRounds.some((item) => item.id === interRoundId && item.title !== title),
   ),
   fn: ({ game }, { interRoundId, title }) => touchGame({
     ...game!,
@@ -237,16 +237,18 @@ sample({
 sample({
   clock: continueLyricsTaskChanged,
   source: combine({ game: $activeGame, mediaTracks: $mediaTracks }),
-  filter: ({ game, mediaTracks }, { interRoundId, taskId, patch }) => Boolean(
-    game
-    && game.interRounds.some((item) => item.id === interRoundId
-      && item.templateId === 'continueLyrics'
-      && item.tasks.some((task) => task.id === taskId))
-    && (patch.answerText === undefined || patch.answerText.length <= DATA_LIMITS.text.interRoundAnswer)
-    && (patch.trackId === undefined || (patch.trackId.length <= DATA_LIMITS.text.id && mediaTracks.some((track) => track.id === patch.trackId)))
-    && (patch.requiredWordsCount === undefined || isValidContinueLyricsRequiredWordsCount(patch.requiredWordsCount))
-    && (patch.cutAtMs === undefined || isValidContinueLyricsCutAtMs(patch.cutAtMs)),
-  ),
+  filter: ({ game, mediaTracks }, { interRoundId, taskId, patch }) => {
+    if (!game) return false;
+    const interRound = game.interRounds.find((item) => item.id === interRoundId);
+    if (interRound?.templateId !== 'continueLyrics') return false;
+    const task = interRound.tasks.find((item) => item.id === taskId);
+    if (!task) return false;
+    if (patch.answerText !== undefined && patch.answerText.length > DATA_LIMITS.text.interRoundAnswer) return false;
+    if (patch.trackId !== undefined && (patch.trackId.length > DATA_LIMITS.text.id || !mediaTracks.some((track) => track.id === patch.trackId))) return false;
+    if (patch.requiredWordsCount !== undefined && !isValidContinueLyricsRequiredWordsCount(patch.requiredWordsCount)) return false;
+    if (patch.cutAtMs !== undefined && !isValidContinueLyricsCutAtMs(patch.cutAtMs)) return false;
+    return Object.entries(patch).some(([key, value]) => task[key as keyof typeof task] !== value);
+  },
   fn: ({ game }, { interRoundId, taskId, patch }) => touchGame({
     ...game!,
     interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'continueLyrics'
@@ -294,15 +296,18 @@ sample({
 sample({
   clock: commonThemeTrackChanged,
   source: combine({ game: $activeGame, mediaTracks: $mediaTracks }),
-  filter: ({ game, mediaTracks }, { interRoundId, stageId, itemId, patch }) => Boolean(
-    game
-    && game.interRounds.some((item) => item.id === interRoundId
-      && item.templateId === 'commonTheme4'
-      && item.stages.some((stage) => stage.id === stageId && stage.tracks.some((track) => track.id === itemId)))
-    && (patch.answerTitle === undefined || patch.answerTitle.length <= DATA_LIMITS.text.songTitle)
-    && (patch.answerArtist === undefined || patch.answerArtist.length <= DATA_LIMITS.text.artist)
-    && (patch.trackId === undefined || (patch.trackId.length <= DATA_LIMITS.text.id && mediaTracks.some((track) => track.id === patch.trackId))),
-  ),
+  filter: ({ game, mediaTracks }, { interRoundId, stageId, itemId, patch }) => {
+    if (!game) return false;
+    const interRound = game.interRounds.find((item) => item.id === interRoundId);
+    if (interRound?.templateId !== 'commonTheme4') return false;
+    const track = interRound.stages.find((stage) => stage.id === stageId)
+      ?.tracks.find((item) => item.id === itemId);
+    if (!track) return false;
+    if (patch.answerTitle !== undefined && patch.answerTitle.length > DATA_LIMITS.text.songTitle) return false;
+    if (patch.answerArtist !== undefined && patch.answerArtist.length > DATA_LIMITS.text.artist) return false;
+    if (patch.trackId !== undefined && (patch.trackId.length > DATA_LIMITS.text.id || !mediaTracks.some((item) => item.id === patch.trackId))) return false;
+    return Object.entries(patch).some(([key, value]) => track[key as keyof typeof track] !== value);
+  },
   fn: ({ game }, { interRoundId, stageId, itemId, patch }) => touchGame({
     ...game!,
     interRounds: game!.interRounds.map((item) => item.id === interRoundId && item.templateId === 'commonTheme4'
@@ -328,7 +333,7 @@ sample({
     && commonTheme.length <= DATA_LIMITS.text.commonTheme
     && game.interRounds.some((item) => item.id === interRoundId
       && item.templateId === 'commonTheme4'
-      && item.stages.some((stage) => stage.id === stageId)),
+      && item.stages.some((stage) => stage.id === stageId && stage.commonTheme !== commonTheme)),
   ),
   fn: ({ game }, { interRoundId, stageId, commonTheme }) => touchGame({
     ...game!,
@@ -344,7 +349,7 @@ sample({
   source: activeGameSource,
   filter: ({ game }, { roundId }) => Boolean(
     game && game.rounds.some((round) =>
-      round.id === roundId && round.categories.length < GAME_LIMITS.categoriesPerRound,
+      round.id === roundId && round.categories.length < EDITOR_LIMITS.categoriesPerRound,
     ),
   ),
   fn: ({ game }, { roundId }) => touchGame({
@@ -380,7 +385,7 @@ sample({
 sample({
   clock: categoryNameChanged,
   source: activeGameSource,
-  filter: ({ game }, { name }) => Boolean(game && name.length <= DATA_LIMITS.text.categoryName),
+  filter: ({ game }, { roundId, categoryId, name }) => Boolean(game && name.length <= DATA_LIMITS.text.categoryName && game.rounds.some((round) => round.id === roundId && round.categories.some((category) => category.id === categoryId && category.name !== name))),
   fn: ({ game }, payload) => touchGame({
     ...game!,
     rounds: game!.rounds.map((round) => round.id === payload.roundId
@@ -400,7 +405,7 @@ sample({
   source: activeGameSource,
   filter: ({ game }, { roundId, categoryId }) => Boolean(
     game && game.rounds.some((round) => round.id === roundId && round.categories.some(
-      (category) => category.id === categoryId && category.questions.length < GAME_LIMITS.questionsPerCategory,
+      (category) => category.id === categoryId && category.questions.length < EDITOR_LIMITS.questionsPerCategory,
     )),
   ),
   fn: ({ game }, { roundId, categoryId }) => touchGame({
@@ -439,11 +444,14 @@ sample({
   clock: questionChanged,
   source: activeGameSource,
   filter: ({ game }, { roundId, categoryId, questionId, patch }) => {
-    if (!game || patch.points === undefined) return Boolean(game);
+    if (!game) return false;
     const category = game.rounds
       .find((round) => round.id === roundId)
       ?.categories.find((item) => item.id === categoryId);
-    return Boolean(category && isQuestionPointsAvailable(category.questions, questionId, patch.points));
+    const question = category?.questions.find((item) => item.id === questionId);
+    if (!category || !question) return false;
+    if (patch.points === undefined) return false;
+    return patch.points !== question.points && isQuestionPointsAvailable(category.questions, questionId, patch.points);
   },
   fn: ({ game }, payload) => touchGame(
     updateQuestion(game!, payload, (question) => ({ ...question, ...payload.patch })),
@@ -454,9 +462,13 @@ sample({
 sample({
   clock: questionSongChanged,
   source: combine({ game: $activeGame, songs: $songs }),
-  filter: ({ game, songs }, { songId }) => Boolean(
-    game && (!songId || songs.some((song) => song.id === songId)),
-  ),
+  filter: ({ game, songs }, { roundId, categoryId, questionId, songId }) => {
+    if (!game || (songId && !songs.some((song) => song.id === songId))) return false;
+    const question = game.rounds.find((round) => round.id === roundId)
+      ?.categories.find((category) => category.id === categoryId)
+      ?.questions.find((item) => item.id === questionId);
+    return Boolean(question && question.songId !== songId);
+  },
   fn: ({ game }, payload) => touchGame(
     updateQuestion(game!, payload, (question) => ({ ...question, songId: payload.songId })),
   ),
@@ -474,10 +486,10 @@ sample({
 sample({
   clock: teamRemoved,
   source: activeGameSource,
-  filter: ({ game }) => Boolean(game),
+  filter: ({ game }, teamId) => Boolean(game && game.teams.length > 1 && game.teams.some((team) => team.id === teamId)),
   fn: ({ game }, teamId) => touchGame({
     ...game!,
-    teams: game!.teams.length > 1 ? game!.teams.filter((team) => team.id !== teamId) : game!.teams,
+    teams: game!.teams.filter((team) => team.id !== teamId),
   }),
   target: gameConfigUpdated,
 });
@@ -487,6 +499,8 @@ sample({
   source: activeGameSource,
   filter: ({ game }, { teamId, patch }) => {
     if (!game) return false;
+    const team = game.teams.find((item) => item.id === teamId);
+    if (!team) return false;
     if (
       patch.name !== undefined
       && (!isPersistableTeamName(patch.name) || !isTeamNameAvailable(game.teams, teamId, patch.name))
@@ -495,7 +509,8 @@ sample({
       patch.color !== undefined
       && (!isValidTeamColor(patch.color) || !isTeamColorAvailable(game.teams, teamId, patch.color))
     ) return false;
-    return true;
+    return (patch.name !== undefined && patch.name !== team.name)
+      || (patch.color !== undefined && patch.color.toLowerCase() !== team.color.toLowerCase());
   },
   fn: ({ game }, { teamId, patch }) => touchGame({
     ...game!,

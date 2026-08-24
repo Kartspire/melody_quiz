@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $audioAssets,
@@ -38,8 +38,10 @@ import { ActionMenu } from './ActionMenu';
 import { SongForm } from './SongForm';
 import { Dialog } from './Dialog';
 import { ImportVerificationSummary } from './ImportVerificationSummary';
+import { MediaTrackPicker } from './MediaTrackPicker';
 
 type MediaTab = 'songs' | 'audio';
+const MEDIA_PAGE_SIZE = 50;
 
 export function MediaLibrary() {
   const [songs, mediaTracks, audioAssets, games, persistedState] = useUnit([$songs, $mediaTracks, $audioAssets, $games, $persistedState]);
@@ -49,6 +51,7 @@ export function MediaLibrary() {
   const [addingTrack, setAddingTrack] = useState(false);
   const [busy, setBusy] = useState<'export' | 'import' | null>(null);
   const [pendingImport, setPendingImport] = useState<{ packageData: ParsedMelodyPackage; preview: PreparedMediaMerge } | null>(null);
+  const [visibleCount, setVisibleCount] = useState(MEDIA_PAGE_SIZE);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
@@ -70,6 +73,13 @@ export function MediaLibrary() {
       return normalizeSearchText(`${track.name} ${asset?.name ?? ''}`).includes(normalized);
     });
   }, [audioById, mediaTracks, query]);
+
+  useEffect(() => {
+    setVisibleCount(MEDIA_PAGE_SIZE);
+  }, [tab, query]);
+
+  const visibleSongs = filteredSongs.slice(0, visibleCount);
+  const visibleTracks = filteredTracks.slice(0, visibleCount);
 
   const exportLibrary = async () => {
     try {
@@ -174,23 +184,26 @@ export function MediaLibrary() {
 
       {tab === 'songs' ? (
         <SongList
-          songs={filteredSongs}
+          songs={visibleSongs}
           allSongsCount={songs.length}
-          mediaTracks={mediaTracks}
           trackById={trackById}
           audioById={audioById}
           usageBySongId={usageBySongId}
           query={query}
           onClearQuery={() => setQuery('')}
+          hasMore={visibleSongs.length < filteredSongs.length}
+          onLoadMore={() => setVisibleCount((count) => count + MEDIA_PAGE_SIZE)}
         />
       ) : (
         <TrackList
-          tracks={filteredTracks}
+          tracks={visibleTracks}
           allTracksCount={mediaTracks.length}
           audioById={audioById}
           usageByTrackId={trackUsage}
           query={query}
           onClearQuery={() => setQuery('')}
+          hasMore={visibleTracks.length < filteredTracks.length}
+          onLoadMore={() => setVisibleCount((count) => count + MEDIA_PAGE_SIZE)}
         />
       )}
 
@@ -202,21 +215,23 @@ export function MediaLibrary() {
 function SongList({
   songs,
   allSongsCount,
-  mediaTracks,
   trackById,
   audioById,
   usageBySongId,
   query,
   onClearQuery,
+  hasMore,
+  onLoadMore,
 }: {
   songs: Song[];
   allSongsCount: number;
-  mediaTracks: MediaTrack[];
   trackById: Map<string, MediaTrack>;
   audioById: Map<string, AudioAsset>;
   usageBySongId: Map<string, SongUsage[]>;
   query: string;
   onClearQuery: () => void;
+  hasMore: boolean;
+  onLoadMore: () => void;
 }) {
   if (allSongsCount === 0) return <div className="empty-state"><h2>Песен пока нет</h2><p>Добавьте первую песню для обычных раундов или перейдите во вкладку «Аудио» для самостоятельных треков.</p></div>;
   if (songs.length === 0 && query) return <NoResults onClear={onClearQuery} />;
@@ -237,8 +252,8 @@ function SongList({
             {usages.length > 0 && <div className="backup-hint">Изменение исполнителя, названия или назначенных треков затронет {usages.length} {usages.length === 1 ? 'игру' : 'игры'}, где эта песня используется.</div>}
 
             <div className="media-audio-grid">
-              <StoredTrackField songId={song.id} kind="minus" label="Минус" suggestedName={songTrackLabel(song, 'минус')} track={minusTrack} asset={minusTrack ? audioById.get(minusTrack.audioId) : undefined} tracks={mediaTracks} usedInGames={usages.length > 0} />
-              <StoredTrackField songId={song.id} kind="plus" label="Плюс" suggestedName={songTrackLabel(song, 'плюс')} track={plusTrack} asset={plusTrack ? audioById.get(plusTrack.audioId) : undefined} tracks={mediaTracks} usedInGames={usages.length > 0} />
+              <StoredTrackField songId={song.id} kind="minus" label="Минус" suggestedName={songTrackLabel(song, 'минус')} track={minusTrack} asset={minusTrack ? audioById.get(minusTrack.audioId) : undefined} usedInGames={usages.length > 0} />
+              <StoredTrackField songId={song.id} kind="plus" label="Плюс" suggestedName={songTrackLabel(song, 'плюс')} track={plusTrack} asset={plusTrack ? audioById.get(plusTrack.audioId) : undefined} usedInGames={usages.length > 0} />
             </div>
 
             <div className="media-song-card__footer">
@@ -259,17 +274,20 @@ function SongList({
           </article>
         );
       })}
+      {hasMore && <button className="secondary-button media-load-more" onClick={onLoadMore}>Показать ещё</button>}
     </section>
   );
 }
 
-function TrackList({ tracks, allTracksCount, audioById, usageByTrackId, query, onClearQuery }: {
+function TrackList({ tracks, allTracksCount, audioById, usageByTrackId, query, onClearQuery, hasMore, onLoadMore }: {
   tracks: MediaTrack[];
   allTracksCount: number;
   audioById: Map<string, AudioAsset>;
   usageByTrackId: Map<string, MediaTrackUsage[]>;
   query: string;
   onClearQuery: () => void;
+  hasMore: boolean;
+  onLoadMore: () => void;
 }) {
   if (allTracksCount === 0) return <div className="empty-state"><h2>Аудиотреков пока нет</h2><p>Здесь могут храниться любые звуки: песни, фрагменты, заставки, mashup или аудио для будущих межраундов.</p></div>;
   if (tracks.length === 0 && query) return <NoResults onClear={onClearQuery} />;
@@ -317,22 +335,23 @@ function TrackList({ tracks, allTracksCount, audioById, usageByTrackId, query, o
           </article>
         );
       })}
+      {hasMore && <button className="secondary-button media-load-more" onClick={onLoadMore}>Показать ещё</button>}
     </section>
   );
 }
 
-function StoredTrackField({ songId, kind, label, suggestedName, track, asset, tracks, usedInGames }: {
+function StoredTrackField({ songId, kind, label, suggestedName, track, asset, usedInGames }: {
   songId: string;
   kind: 'minus' | 'plus';
   label: string;
   suggestedName: string;
   track?: MediaTrack;
   asset?: AudioAsset;
-  tracks: MediaTrack[];
   usedInGames: boolean;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickingTrack, setPickingTrack] = useState(false);
 
   const replaceFile = async (file: File) => {
     if (usedInGames && track && !window.confirm(`Эта песня используется в играх. Назначить ей новый ${label.toLowerCase()}? Старый аудиотрек останется в общей медиатеке.`)) return;
@@ -352,14 +371,20 @@ function StoredTrackField({ songId, kind, label, suggestedName, track, asset, tr
   return (
     <div className="stored-audio-field">
       <div className="stored-audio-field__head"><strong>{label}</strong><span>{track?.name ?? 'не выбран'}</span></div>
-      <select value={track?.id ?? ''} onChange={(event) => {
-        const trackId = event.target.value || undefined;
-        if (usedInGames && trackId !== track?.id && !window.confirm(`Изменить ${label.toLowerCase()} у песни, которая уже используется в игре?`)) return;
-        songTrackChanged({ songId, kind, trackId });
-      }}>
-        <option value="">Не выбран</option>
-        {tracks.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-      </select>
+      <button className="secondary-button stored-audio-field__picker" onClick={() => setPickingTrack(true)}>
+        {track ? `Выбран: ${track.name}` : 'Выбрать из медиатеки'}
+      </button>
+      {pickingTrack && (
+        <MediaTrackPicker
+          currentTrackId={track?.id}
+          onClose={() => setPickingTrack(false)}
+          onSelect={(trackId) => {
+            if (usedInGames && trackId !== track?.id && !window.confirm(`Изменить ${label.toLowerCase()} у песни, которая уже используется в игре?`)) return;
+            songTrackChanged({ songId, kind, trackId });
+            setPickingTrack(false);
+          }}
+        />
+      )}
       {asset && <AudioPreview asset={asset} />}
       {error && <small className="missing-audio" role="alert">{error}</small>}
       <div className="inline-actions">
@@ -440,8 +465,17 @@ function LibraryImportDialog({ prepared, onCancel, onImport }: { prepared: Prepa
 }
 
 function AudioPreview({ asset }: { asset: AudioAsset }) {
-  const source = useObjectUrl(asset.blob);
-  return source ? <audio className="media-audio-preview" src={source} controls preload="metadata" /> : null;
+  const [opened, setOpened] = useState(false);
+  const source = useObjectUrl(opened ? asset.blob : undefined);
+  if (!opened) {
+    return <button className="text-button media-audio-preview-toggle" onClick={() => setOpened(true)}>▶ Прослушать</button>;
+  }
+  return (
+    <div className="media-audio-preview-wrap">
+      {source && <audio className="media-audio-preview" src={source} controls preload="metadata" />}
+      <button className="text-button" onClick={() => setOpened(false)}>Скрыть плеер</button>
+    </div>
+  );
 }
 
 function NoResults({ onClear }: { onClear: () => void }) {

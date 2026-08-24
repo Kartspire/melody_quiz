@@ -14,16 +14,28 @@ const crc32 = (bytes) => {
   return (crc ^ 0xffffffff) >>> 0;
 };
 
-self.onmessage = async (event) => {
-  const { id, blob, includeCrc } = event.data;
+const toHex = (bytes) => [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+
+let queue = Promise.resolve();
+
+self.onmessage = (event) => {
+  const payload = event.data;
+  queue = queue.then(() => processDigest(payload));
+};
+
+async function processDigest({ id, blob, includeCrc }) {
   try {
     if (!(blob instanceof Blob)) throw new Error('Hash worker получил некорректный Blob.');
-    // Allocate/read the large ArrayBuffer inside the worker, not on the UI thread.
+    // Process requests sequentially so several large imports cannot allocate several
+    // full-size ArrayBuffers in this worker at the same time.
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const digest = await crypto.subtle.digest('SHA-256', bytes);
-    const sha256 = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-    self.postMessage({ id, sha256, crc32: includeCrc ? crc32(bytes) : undefined });
+    self.postMessage({
+      id,
+      sha256: toHex(new Uint8Array(digest)),
+      crc32: includeCrc ? crc32(bytes) : undefined,
+    });
   } catch (error) {
     self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
   }
-};
+}

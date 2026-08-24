@@ -103,9 +103,11 @@ export const $persistedState = combine(
 );
 
 let saveTimer: number | undefined;
+let hasPendingSave = false;
 
 export const persistedStateImportFx = createEffect(async (state: PersistedState) => {
   window.clearTimeout(saveTimer);
+  hasPendingSave = false;
   await saveState(state);
   return state;
 });
@@ -130,7 +132,11 @@ sample({
 
 const scheduleSaveFx = createEffect((state: PersistedState) => {
   window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => void saveFx(state), 250);
+  hasPendingSave = true;
+  saveTimer = window.setTimeout(() => {
+    hasPendingSave = false;
+    void saveFx(state);
+  }, 250);
 });
 
 sample({
@@ -146,8 +152,9 @@ if (typeof window !== 'undefined') {
 }
 
 function flushPendingSave() {
-  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState()) return;
+  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState() || !hasPendingSave) return;
   window.clearTimeout(saveTimer);
+  hasPendingSave = false;
   void saveFx($persistedState.getState());
 }
 
