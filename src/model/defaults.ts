@@ -129,6 +129,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   activeExcludedTeamIds: [],
   currentIncorrectTeamIds: [],
   nextExcludedTeamIds: [],
+  history: [],
   updatedAt: Date.now(),
 });
 
@@ -276,6 +277,7 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     activeExcludedTeamIds: legacy.session.activeExcludedTeamIds ?? [],
     currentIncorrectTeamIds: legacy.session.currentIncorrectTeamIds ?? [],
     nextExcludedTeamIds: legacy.session.nextExcludedTeamIds ?? [],
+    history: [],
     updatedAt: now,
   };
 

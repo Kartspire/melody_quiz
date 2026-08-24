@@ -1,7 +1,9 @@
-import type { GameConfig, GameSession, GameStage, InterRound, InterRoundSession, Question, Round } from './types';
+import { DATA_LIMITS } from './limits';
+import type { GameConfig, GameSession, GameSessionHistoryEntry, GameStage, InterRound, InterRoundSession, Question, Round } from './types';
 
 type LegacyCompatibleSession = Partial<GameSession> & { gameId: string; roundIndex?: number };
 type LegacyCompatibleInterRoundSession = Partial<InterRoundSession> & { interRoundId?: string };
+type LegacyHistoryEntry = Partial<GameSessionHistoryEntry>;
 
 export function findQuestion(config: GameConfig, questionId: string): Question | undefined {
   for (const round of config.rounds) {
@@ -115,6 +117,13 @@ export function normalizeSession(rawSession: GameSession | LegacyCompatibleSessi
     }
   }
 
+  const history = Array.isArray(session.history)
+    ? session.history
+        .slice(-DATA_LIMITS.sessionHistoryEntries)
+        .map((entry) => normalizeHistoryEntry(entry, config))
+        .filter((entry): entry is GameSessionHistoryEntry => Boolean(entry))
+    : [];
+
   return {
     gameId: session.gameId,
     started: Boolean(session.started),
@@ -133,13 +142,18 @@ export function normalizeSession(rawSession: GameSession | LegacyCompatibleSessi
       ? session.currentIncorrectTeamIds
       : inferredCurrentIncorrectTeamIds,
     nextExcludedTeamIds,
+    history,
     updatedAt: Number.isFinite(session.updatedAt) && (session.updatedAt as number) > 0
       ? session.updatedAt as number
       : config?.createdAt ?? Date.now(),
   };
 }
 
-export function reconcileSession(config: GameConfig, rawSession: GameSession | LegacyCompatibleSession): GameSession {
+export function reconcileSession(
+  config: GameConfig,
+  rawSession: GameSession | LegacyCompatibleSession,
+  options: { autoAdvanceCompletedStage?: boolean } = {},
+): GameSession {
   const session = normalizeSession(rawSession, config);
   const teamIds = new Set(config.teams.map((team) => team.id));
   const questionIds = new Set(config.rounds.flatMap((round) => round.categories.flatMap((category) => category.questions.map((question) => question.id))));
@@ -176,7 +190,7 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
 
   // Editing a running game can make the current stage already complete. Move forward
   // deterministically so the player cannot get stuck on an empty/completed board.
-  if (session.started && !activeQuestionId) {
+  if (options.autoAdvanceCompletedStage !== false && session.started && !activeQuestionId) {
     const previousStageIndex = stageIndex;
     while (stageIndex < config.stages.length) {
       const stage = config.stages[stageIndex];
@@ -220,6 +234,49 @@ export function reconcileSession(config: GameConfig, rawSession: GameSession | L
       ? unique(session.currentIncorrectTeamIds.filter((id) => teamIds.has(id)))
       : [],
     nextExcludedTeamIds: unique(session.nextExcludedTeamIds.filter((id) => teamIds.has(id))),
+  };
+}
+
+function normalizeHistoryEntry(rawEntry: unknown, config?: GameConfig): GameSessionHistoryEntry | null {
+  if (!rawEntry || typeof rawEntry !== 'object') return null;
+  const entry = rawEntry as LegacyHistoryEntry;
+  let stageIndex = Number.isSafeInteger(entry.stageIndex) ? Math.max(0, entry.stageIndex as number) : 0;
+  let stageId = typeof entry.stageId === 'string' && entry.stageId ? entry.stageId : null;
+  if (config) {
+    const stableStageIndex = stageId ? config.stages.findIndex((stage) => stage.id === stageId) : -1;
+    if (stableStageIndex >= 0) {
+      stageIndex = stableStageIndex;
+    } else {
+      stageIndex = Math.min(stageIndex, config.stages.length);
+      stageId = config.stages[stageIndex]?.id ?? null;
+    }
+  }
+  const interRound = entry.interRound && typeof entry.interRound.interRoundId === 'string'
+    ? {
+        interRoundId: entry.interRound.interRoundId,
+        phase: entry.interRound.phase === 'play' || entry.interRound.phase === 'answer' ? entry.interRound.phase : 'intro' as const,
+        taskIndex: Number.isSafeInteger(entry.interRound.taskIndex) ? Math.max(0, entry.interRound.taskIndex as number) : 0,
+        itemId: typeof entry.interRound.itemId === 'string' && entry.interRound.itemId ? entry.interRound.itemId : null,
+        trackIndex: Number.isSafeInteger(entry.interRound.trackIndex) ? Math.max(0, entry.interRound.trackIndex as number) : 0,
+      }
+    : null;
+  return {
+    started: Boolean(entry.started),
+    stageIndex,
+    stageId,
+    activeQuestionId: typeof entry.activeQuestionId === 'string' ? entry.activeQuestionId : null,
+    pausedQuestionId: typeof entry.pausedQuestionId === 'string' ? entry.pausedQuestionId : null,
+    completedQuestionIds: Array.isArray(entry.completedQuestionIds) ? entry.completedQuestionIds.filter((id): id is string => typeof id === 'string') : [],
+    completedInterRoundIds: Array.isArray(entry.completedInterRoundIds) ? entry.completedInterRoundIds.filter((id): id is string => typeof id === 'string') : [],
+    interRound,
+    scores: entry.scores && typeof entry.scores === 'object'
+      ? Object.fromEntries(Object.entries(entry.scores).filter(([, score]) => Number.isSafeInteger(score)))
+      : {},
+    awardedTeamId: typeof entry.awardedTeamId === 'string' ? entry.awardedTeamId : null,
+    answerRevealed: Boolean(entry.answerRevealed),
+    activeExcludedTeamIds: Array.isArray(entry.activeExcludedTeamIds) ? entry.activeExcludedTeamIds.filter((id): id is string => typeof id === 'string') : [],
+    currentIncorrectTeamIds: Array.isArray(entry.currentIncorrectTeamIds) ? entry.currentIncorrectTeamIds.filter((id): id is string => typeof id === 'string') : [],
+    nextExcludedTeamIds: Array.isArray(entry.nextExcludedTeamIds) ? entry.nextExcludedTeamIds.filter((id): id is string => typeof id === 'string') : [],
   };
 }
 

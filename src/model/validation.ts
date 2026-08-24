@@ -12,6 +12,7 @@ import type {
   AudioAsset,
   GameConfig,
   GameSession,
+  GameSessionHistoryEntry,
   InterRound,
   MediaTrack,
   PersistedState,
@@ -373,6 +374,9 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (!Number.isSafeInteger(session.stageIndex) || session.stageIndex < 0 || session.stageIndex > game.stages.length || typeof session.started !== 'boolean' || typeof session.answerRevealed !== 'boolean' || !isValidTimestamp(session.updatedAt)) {
       throw new Error('Локальное хранилище содержит повреждённую игровую сессию.');
     }
+    if (!Array.isArray(session.history) || session.history.length > DATA_LIMITS.sessionHistoryEntries || session.history.some((entry) => !isValidHistoryEntry(entry))) {
+      throw new Error('Локальное хранилище содержит повреждённую историю игровой сессии.');
+    }
     const expectedStageId = game.stages[session.stageIndex]?.id ?? null;
     if (session.stageId !== expectedStageId) throw new Error('Игровая сессия содержит несогласованный активный этап.');
 
@@ -420,6 +424,36 @@ export function assertValidPersistedState(state: PersistedState): void {
     }
   }
   if (state.activeGameId !== null && !gameIds.has(state.activeGameId)) throw new Error('Активная игра отсутствует в локальном хранилище.');
+}
+
+function isValidHistoryEntry(entry: unknown): entry is GameSessionHistoryEntry {
+  if (!entry || typeof entry !== 'object') return false;
+  const value = entry as Partial<GameSessionHistoryEntry>;
+  if (typeof value.started !== 'boolean' || typeof value.answerRevealed !== 'boolean') return false;
+  if (!Number.isSafeInteger(value.stageIndex) || (value.stageIndex as number) < 0) return false;
+  if (value.stageId !== null && !isBoundedText(value.stageId, DATA_LIMITS.text.id)) return false;
+  if (value.activeQuestionId !== null && !isBoundedText(value.activeQuestionId, DATA_LIMITS.text.id)) return false;
+  if (value.pausedQuestionId !== null && !isBoundedText(value.pausedQuestionId, DATA_LIMITS.text.id)) return false;
+  if (value.awardedTeamId !== null && !isBoundedText(value.awardedTeamId, DATA_LIMITS.text.id)) return false;
+  for (const list of [
+    value.completedQuestionIds,
+    value.completedInterRoundIds,
+    value.activeExcludedTeamIds,
+    value.currentIncorrectTeamIds,
+    value.nextExcludedTeamIds,
+  ]) {
+    if (!Array.isArray(list) || list.some((id) => !isBoundedText(id, DATA_LIMITS.text.id))) return false;
+  }
+  if (!value.scores || typeof value.scores !== 'object' || Object.entries(value.scores).some(([teamId, score]) => !isBoundedText(teamId, DATA_LIMITS.text.id) || !Number.isSafeInteger(score))) return false;
+  if (value.interRound !== null) {
+    const progress = value.interRound;
+    if (!progress || !isBoundedText(progress.interRoundId, DATA_LIMITS.text.id)) return false;
+    if (!['intro', 'play', 'answer'].includes(progress.phase)) return false;
+    if (!Number.isSafeInteger(progress.taskIndex) || progress.taskIndex < 0) return false;
+    if (progress.itemId !== null && !isBoundedText(progress.itemId, DATA_LIMITS.text.id)) return false;
+    if (!Number.isSafeInteger(progress.trackIndex) || progress.trackIndex < 0) return false;
+  }
+  return true;
 }
 
 export function isValidTimestamp(value: unknown): value is number {

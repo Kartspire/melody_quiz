@@ -116,14 +116,12 @@ export type InterRoundSession = {
   trackIndex: number;
 };
 
-export type GameSession = {
-  gameId: string;
+export type GameSessionHistoryEntry = {
   started: boolean;
   stageIndex: number;
-  /** Stable identity of the active stage. Null means the game is finished. */
+  /** Stable identity of the active stage at the time of the checkpoint. */
   stageId: string | null;
   activeQuestionId: string | null;
-  /** Question that was closed without completion and can resume its current attempt state. */
   pausedQuestionId: string | null;
   completedQuestionIds: string[];
   completedInterRoundIds: string[];
@@ -134,6 +132,12 @@ export type GameSession = {
   activeExcludedTeamIds: string[];
   currentIncorrectTeamIds: string[];
   nextExcludedTeamIds: string[];
+};
+
+export type GameSession = GameSessionHistoryEntry & {
+  gameId: string;
+  /** Previous visible gameplay states. The latest entry is restored by the Back action. */
+  history: GameSessionHistoryEntry[];
   /** Last meaningful gameplay/session change. Used to choose the most recently played saved game. */
   updatedAt: number;
 };
@@ -202,4 +206,4 @@ export type PlayableQuestion = Question & {
   plus?: AudioAsset;
 };
 
-export type Screen = 'library' | 'media' | 'settings' | 'game' | 'admin';
+export type Screen = 'library' | 'media' | 'vocal-removal' | 'settings' | 'game' | 'admin';

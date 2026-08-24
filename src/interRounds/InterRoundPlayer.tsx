@@ -3,19 +3,28 @@ import { useUnit } from 'effector-react';
 import {
   $activeInterRound,
   $audioAssets,
+  $canGoToPreviousStage,
   $mediaTracks,
   $session,
   commonThemeTrackAdvanced,
   interRoundAnswerRevealed,
   interRoundNextRequested,
   interRoundStarted,
+  previousStageRequested,
 } from '../model/game';
 import type { AudioAsset } from '../model/types';
 import { useObjectUrl } from '../hooks/useObjectUrl';
+import { AudioTimeline } from '../components/AudioTimeline';
 import { getInterRoundTemplate } from './templates';
 
 export function InterRoundPlayer() {
-  const [interRound, session, mediaTracks, audioAssets] = useUnit([$activeInterRound, $session, $mediaTracks, $audioAssets]);
+  const [interRound, session, canGoBack, mediaTracks, audioAssets] = useUnit([
+    $activeInterRound,
+    $session,
+    $canGoToPreviousStage,
+    $mediaTracks,
+    $audioAssets,
+  ]);
   const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
   const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
 
@@ -26,6 +35,7 @@ export function InterRoundPlayer() {
   if (!progress || progress.phase === 'intro') {
     return (
       <main className="inter-round-screen inter-round-intro page-shell">
+        {canGoBack && <GameBackButton onBack={() => previousStageRequested()} />}
         <span className="eyebrow">Межраунд</span>
         <h1>{interRound.title}</h1>
         <section className="inter-round-rules-card">
@@ -54,6 +64,7 @@ export function InterRoundPlayer() {
         answerText={task.answerText}
         asset={resolved.asset}
         onReveal={() => interRoundAnswerRevealed()}
+        onBack={() => previousStageRequested()}
         onNext={() => interRoundNextRequested()}
         last={taskIndex === interRound.tasks.length - 1}
       />
@@ -75,6 +86,7 @@ export function InterRoundPlayer() {
       commonTheme={stage.commonTheme}
       onAdvance={() => commonThemeTrackAdvanced()}
       onReveal={() => interRoundAnswerRevealed()}
+      onBack={() => previousStageRequested()}
       onNext={() => interRoundNextRequested()}
       lastStage={stageIndex === interRound.stages.length - 1}
     />
@@ -91,6 +103,7 @@ function ContinueLyricsPlayer({
   answerText,
   asset,
   onReveal,
+  onBack,
   onNext,
   last,
 }: {
@@ -103,6 +116,7 @@ function ContinueLyricsPlayer({
   answerText: string;
   asset?: AudioAsset;
   onReveal: () => void;
+  onBack: () => void;
   onNext: () => void;
   last: boolean;
 }) {
@@ -111,6 +125,8 @@ function ContinueLyricsPlayer({
   const source = useObjectUrl(asset?.blob);
   const [playing, setPlaying] = useState(false);
   const [cutReached, setCutReached] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
 
   const stopCutMonitor = () => {
     if (cutFrameRef.current !== null) cancelAnimationFrame(cutFrameRef.current);
@@ -129,6 +145,7 @@ function ContinueLyricsPlayer({
         audio.pause();
         try { audio.currentTime = cutAtMs / 1000; } catch { /* ignore seek errors */ }
         setPlaying(false);
+        setProgress(cutAtMs / 1000);
         setCutReached(true);
         cutFrameRef.current = null;
         return;
@@ -147,12 +164,17 @@ function ContinueLyricsPlayer({
     audio.src = source;
     audio.load();
     setPlaying(false);
+    setProgress(0);
+    setDuration(0);
     setCutReached(phase === 'answer');
 
     const prepare = () => {
       if (cancelled) return;
       const safeStart = Number.isFinite(audio.duration) ? Math.min(startAt, Math.max(0, audio.duration - 0.01)) : startAt;
-      try { audio.currentTime = Math.max(0, safeStart); } catch { /* metadata may still be unavailable in exotic browsers */ }
+      try {
+        audio.currentTime = Math.max(0, safeStart);
+        setProgress(Math.max(0, safeStart));
+      } catch { /* metadata may still be unavailable in exotic browsers */ }
       if (phase === 'answer') {
         void audio.play().catch(() => setPlaying(false));
       }
@@ -190,6 +212,7 @@ function ContinueLyricsPlayer({
 
   return (
     <main className="inter-round-screen page-shell">
+      <GameBackButton onBack={onBack} />
       <div className="inter-round-play-heading">
         <div><span className="eyebrow">{title}</span><h1>{phase === 'answer' ? 'Правильный ответ' : `Задание ${taskNumber} из ${totalTasks}`}</h1></div>
         <span className="inter-round-counter">{taskNumber}/{totalTasks}</span>
@@ -204,8 +227,28 @@ function ContinueLyricsPlayer({
             ref={audioRef}
             onPlay={() => { setPlaying(true); startCutMonitor(); }}
             onPause={() => { stopCutMonitor(); setPlaying(false); }}
-            onEnded={() => { stopCutMonitor(); setPlaying(false); setCutReached(true); }}
+            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+            onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+            onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
+            onEnded={(event) => {
+              stopCutMonitor();
+              setPlaying(false);
+              setProgress(Math.min(event.currentTarget.duration || 0, cutAtMs / 1000));
+              setCutReached(true);
+            }}
           />
+          {source && (
+            <AudioTimeline
+              className="inter-round-audio-timeline"
+              progress={Math.min(progress, cutAtMs / 1000)}
+              duration={duration ? Math.min(duration, cutAtMs / 1000) : 0}
+              onSeek={(time) => {
+                if (audioRef.current) audioRef.current.currentTime = time;
+                setProgress(time);
+                if (time >= cutAtMs / 1000 - 0.05) setCutReached(true);
+              }}
+            />
+          )}
           {cutReached && <div className="inter-round-waiting-note">Трек остановлен. Дождитесь, пока команды сдадут ответы.</div>}
           <button className="secondary-button inter-round-reveal-button" disabled={!cutReached} onClick={onReveal}>Показать правильный ответ</button>
         </section>
@@ -215,7 +258,29 @@ function ContinueLyricsPlayer({
           <blockquote>{answerText}</blockquote>
           <div className="inter-round-track-name">Полный исходный трек</div>
           <button className="primary-button" disabled={!source} onClick={() => void toggle()}>{playing ? 'Пауза' : '▶ Включить полный трек'}</button>
-          <audio ref={audioRef} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+          <audio
+            ref={audioRef}
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+            onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+            onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
+            onEnded={(event) => {
+              setPlaying(false);
+              setProgress(event.currentTarget.duration || 0);
+            }}
+          />
+          {source && (
+            <AudioTimeline
+              className="inter-round-audio-timeline"
+              progress={progress}
+              duration={duration}
+              onSeek={(time) => {
+                if (audioRef.current) audioRef.current.currentTime = time;
+                setProgress(time);
+              }}
+            />
+          )}
           <button className="secondary-button inter-round-next-button" onClick={onNext}>{last ? 'Завершить межраунд →' : 'Следующее задание →'}</button>
         </section>
       )}
@@ -233,6 +298,7 @@ function CommonThemePlayer({
   commonTheme,
   onAdvance,
   onReveal,
+  onBack,
   onNext,
   lastStage,
 }: {
@@ -245,12 +311,15 @@ function CommonThemePlayer({
   commonTheme: string;
   onAdvance: () => void;
   onReveal: () => void;
+  onBack: () => void;
   onNext: () => void;
   lastStage: boolean;
 }) {
   const playingComplete = playbackIndex >= tracks.length;
   const currentIndex = Math.min(Math.max(playbackIndex, 0), tracks.length - 1);
   const [playing, setPlaying] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [duration, setDuration] = useState(0);
   const audioRef = useRef<HTMLAudioElement>(null);
   const current = tracks[currentIndex];
   const source = useObjectUrl(current?.asset?.blob);
@@ -263,6 +332,8 @@ function CommonThemePlayer({
     audio.currentTime = 0;
     audio.load();
     setPlaying(false);
+    setProgress(0);
+    setDuration(0);
   }, [source, currentIndex, phase, playingComplete]);
 
   const play = async () => {
@@ -292,6 +363,7 @@ function CommonThemePlayer({
   if (phase === 'answer') {
     return (
       <main className="inter-round-screen page-shell">
+        <GameBackButton onBack={onBack} />
         <span className="eyebrow">{title} · Этап {stageNumber} из {totalStages}</span>
         <h1>Правильные ответы</h1>
         <section className="common-theme-answer-list">
@@ -307,6 +379,7 @@ function CommonThemePlayer({
 
   return (
     <main className="inter-round-screen page-shell">
+      <GameBackButton onBack={onBack} />
       <div className="inter-round-play-heading">
         <div><span className="eyebrow">Межраунд · Этап {stageNumber} из {totalStages}</span><h1>{title}</h1></div>
         <span className="inter-round-counter">{playingComplete ? '4/4' : `${currentIndex + 1}/4`}</span>
@@ -328,7 +401,26 @@ function CommonThemePlayer({
             <h2>Трек {currentIndex + 1}</h2>
             <p>Запишите название и исполнителя. После четырёх треков определите общую тему.</p>
             <button className="primary-button" disabled={!source} onClick={() => void play()}>{playing ? 'Пауза' : '▶ Включить трек'}</button>
-            <audio ref={audioRef} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={advance} />
+            <audio
+              ref={audioRef}
+              onPlay={() => setPlaying(true)}
+              onPause={() => setPlaying(false)}
+              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+              onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+              onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
+              onEnded={advance}
+            />
+            {source && (
+              <AudioTimeline
+                className="inter-round-audio-timeline"
+                progress={progress}
+                duration={duration}
+                onSeek={(time) => {
+                  if (audioRef.current) audioRef.current.currentTime = time;
+                  setProgress(time);
+                }}
+              />
+            )}
             <div className="inter-round-inline-actions">
               <button className="secondary-button" onClick={advance}>{currentIndex < 3 ? 'Следующий трек →' : 'Закончить прослушивание →'}</button>
             </div>
@@ -339,11 +431,18 @@ function CommonThemePlayer({
   );
 }
 
+function GameBackButton({ onBack }: { onBack: () => void }) {
+  return (
+    <div className="game-step-navigation">
+      <button className="text-button game-back-button" onClick={onBack}>← Вернуться на предыдущий этап</button>
+    </div>
+  );
+}
+
 function resolveTrack(trackId: string | undefined, trackById: Map<string, { audioId: string }>, audioById: Map<string, AudioAsset>) {
   const track = trackId ? trackById.get(trackId) : undefined;
   return { asset: track ? audioById.get(track.audioId) : undefined };
 }
-
 
 function wordLabel(value: number) {
   const mod10 = value % 10;

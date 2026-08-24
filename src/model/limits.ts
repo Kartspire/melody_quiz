@@ -32,6 +32,7 @@ export const DATA_LIMITS = {
   packageFiles: 10_000,
   packageSongs: 5_000,
   packageTracks: 10_000,
+  sessionHistoryEntries: 200,
   text: {
     gameTitle: 200,
     roundName: 200,

@@ -7,6 +7,7 @@ import {
   $activeRound,
   $activeRoundOrdinal,
   $audioAssets,
+  $canGoToPreviousStage,
   $isGameFinished,
   $mediaTracks,
   $session,
@@ -14,6 +15,7 @@ import {
   gameLaunchRequested,
   isRoundComplete,
   nextStageRequested,
+  previousStageRequested,
   nobodyGuessed,
   questionClosed,
   questionOpened,
@@ -24,13 +26,14 @@ import { AudioQuestion } from './AudioQuestion';
 import { InterRoundPlayer } from '../interRounds/InterRoundPlayer';
 
 export function GameBoard() {
-  const [config, session, round, roundOrdinal, interRound, activeQuestion, finished, songs, mediaTracks, audioAssets] = useUnit([
+  const [config, session, round, roundOrdinal, interRound, activeQuestion, canGoBack, finished, songs, mediaTracks, audioAssets] = useUnit([
     $activeGame,
     $session,
     $activeRound,
     $activeRoundOrdinal,
     $activeInterRound,
     $activeQuestion,
+    $canGoToPreviousStage,
     $isGameFinished,
     $songs,
     $mediaTracks,
@@ -47,6 +50,11 @@ export function GameBoard() {
     const ranking = [...config.teams].sort((a, b) => (session.scores[b.id] ?? 0) - (session.scores[a.id] ?? 0));
     return (
       <main className="game-page game-finished page-shell">
+        {canGoBack && (
+          <div className="game-step-navigation">
+            <button className="text-button game-back-button" onClick={() => previousStageRequested()}>← Вернуться на предыдущий этап</button>
+          </div>
+        )}
         <span className="eyebrow">Игра окончена</span>
         <h1>Финальный счёт</h1>
         <div className="podium-list">
@@ -80,11 +88,14 @@ export function GameBoard() {
         onAward={(teamId) => teamAwarded(teamId)}
         onIncorrect={(teamId) => teamIncorrectToggled(teamId)}
         onNobodyGuessed={() => nobodyGuessed()}
+        onBack={() => {
+          if (session.answerRevealed) previousStageRequested();
+          else questionClosed({ completed: false });
+        }}
         onClose={() => {
           const completed = session.answerRevealed;
           const shouldAdvance = completed && isRoundComplete(config, session);
-          questionClosed({ completed });
-          if (shouldAdvance) nextStageRequested();
+          questionClosed({ completed, advanceStage: shouldAdvance });
         }}
       />
     );
@@ -100,6 +111,11 @@ export function GameBoard() {
 
   return (
     <main className="game-page page-shell">
+      {canGoBack && (
+        <div className="game-step-navigation">
+          <button className="text-button game-back-button" onClick={() => previousStageRequested()}>← Вернуться на предыдущий этап</button>
+        </div>
+      )}
       <div className="game-round-heading">
         <div>
           <span className="eyebrow">Раунд {roundOrdinal} из {config.rounds.length}</span>

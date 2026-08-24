@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PlayableQuestion, Team } from '../model/types';
 import { useObjectUrl } from '../hooks/useObjectUrl';
+import { AudioTimeline } from './AudioTimeline';
 
 export function AudioQuestion({
   question,
@@ -14,6 +15,7 @@ export function AudioQuestion({
   onAward,
   onIncorrect,
   onNobodyGuessed,
+  onBack,
   onClose,
 }: {
   question: PlayableQuestion;
@@ -27,6 +29,7 @@ export function AudioQuestion({
   onAward: (teamId: string) => void;
   onIncorrect: (teamId: string) => void;
   onNobodyGuessed: () => void;
+  onBack: () => void;
   onClose: () => void;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -85,14 +88,11 @@ export function AudioQuestion({
     }
   };
 
-  const formatTime = (seconds: number) => {
-    if (!Number.isFinite(seconds)) return '0:00';
-    const minutes = Math.floor(seconds / 60);
-    return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, '0')}`;
-  };
-
   return (
     <main className="question-screen page-shell">
+      <div className="game-step-navigation">
+        <button className="text-button game-back-button" onClick={onBack}>← Вернуться на предыдущий этап</button>
+      </div>
       <div className="question-meta">
         <span>{roundName}</span>
         <strong>{question.points} баллов</strong>
@@ -138,23 +138,14 @@ export function AudioQuestion({
               >
                 {playing ? 'Ⅱ' : '▶'}
               </button>
-              <div className="timeline-wrap">
-                <input
-                  className="timeline"
-                  type="range"
-                  aria-label="Позиция воспроизведения"
-                  min={0}
-                  max={duration || 0}
-                  step={0.1}
-                  value={Math.min(progress, duration || 0)}
-                  onChange={(event) => {
-                    const time = Number(event.target.value);
-                    if (audioRef.current) audioRef.current.currentTime = time;
-                    setProgress(time);
-                  }}
-                />
-                <div className="time-row"><span>{formatTime(progress)}</span><span>{formatTime(duration)}</span></div>
-              </div>
+              <AudioTimeline
+                progress={progress}
+                duration={duration}
+                onSeek={(time) => {
+                  if (audioRef.current) audioRef.current.currentTime = time;
+                  setProgress(time);
+                }}
+              />
             </div>
           </>
         )}
@@ -220,7 +211,7 @@ export function AudioQuestion({
             >
               Никто не угадал — показать ответ
             </button>
-            <button className="text-button" onClick={onClose}>← Вернуться без завершения вопроса</button>
+
           </div>
         </section>
       ) : (

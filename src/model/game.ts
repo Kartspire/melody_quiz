@@ -64,6 +64,7 @@ export { $activeGame, $session } from './games/selectors';
 export {
   $activeInterRound,
   $activeQuestion,
+  $canGoToPreviousStage,
   $activeRound,
   $activeRoundOrdinal,
   $activeStage,
@@ -74,6 +75,7 @@ export {
   interRoundNextRequested,
   interRoundStarted,
   nextStageRequested,
+  previousStageRequested,
   nobodyGuessed,
   questionClosed,
   questionOpened,
