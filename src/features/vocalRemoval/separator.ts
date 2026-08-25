@@ -90,6 +90,11 @@ export async function createInstrumental(
   }
 }
 
+export function prepareVocalSeparator() {
+  const worker = getWorker();
+  worker.postMessage({ type: 'prepare' });
+}
+
 export async function releaseVocalSeparator() {
   const request = activeRequest;
   if (request) {

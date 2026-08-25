@@ -21,6 +21,7 @@ import {
   questionOpened,
   teamAwarded,
   teamIncorrectToggled,
+  teamUnlocked,
 } from '../model/game';
 import { AudioQuestion } from './AudioQuestion';
 import { InterRoundPlayer } from '../interRounds/InterRoundPlayer';
@@ -87,6 +88,7 @@ export function GameBoard() {
         nextExcludedTeamIds={session.nextExcludedTeamIds}
         onAward={(teamId) => teamAwarded(teamId)}
         onIncorrect={(teamId) => teamIncorrectToggled(teamId)}
+        onUnlock={(teamId) => teamUnlocked(teamId)}
         onNobodyGuessed={() => nobodyGuessed()}
         onBack={() => {
           if (session.answerRevealed) previousStageRequested();
@@ -129,8 +131,20 @@ export function GameBoard() {
 
       {session.nextExcludedTeamIds.length > 0 && (
         <div className="next-skip-notice">
-          <strong>Следующую песню пропускают:</strong>{' '}
-          {config.teams.filter((team) => session.nextExcludedTeamIds.includes(team.id)).map((team) => team.name).join(', ')}
+          <strong>Следующую песню пропускают:</strong>
+          <div className="next-skip-team-list">
+            {config.teams
+              .filter((team) => session.nextExcludedTeamIds.includes(team.id))
+              .map((team) => (
+                <span className="next-skip-team" key={team.id}>
+                  <span className="team-dot" style={{ '--team-color': team.color } as React.CSSProperties} />
+                  <span>{team.name}</span>
+                  <button type="button" className="team-unlock-button" onClick={() => teamUnlocked(team.id)}>
+                    Разблокировать
+                  </button>
+                </span>
+              ))}
+          </div>
         </div>
       )}
 

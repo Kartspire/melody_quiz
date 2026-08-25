@@ -83,6 +83,7 @@ export {
   questionOpened,
   teamAwarded,
   teamIncorrectToggled,
+  teamUnlocked,
   teamScoreChanged,
 } from './games/session';
 

@@ -26,6 +26,7 @@ export function transitionInterRoundSession(
         pausedQuestionId: null,
         activeExcludedTeamIds: [],
         currentIncorrectTeamIds: [],
+        nextExcludedTeamIds: [],
         interRound: {
           interRoundId: interRound.id,
           phase: 'play',
@@ -94,6 +95,9 @@ export function transitionInterRoundSession(
         completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
         interRound: null,
         pausedQuestionId: null,
+        activeExcludedTeamIds: [],
+        currentIncorrectTeamIds: [],
+        nextExcludedTeamIds: [],
       }, now);
     }
   }

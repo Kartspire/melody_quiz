@@ -14,6 +14,7 @@ export function AudioQuestion({
   nextExcludedTeamIds,
   onAward,
   onIncorrect,
+  onUnlock,
   onNobodyGuessed,
   onBack,
   onClose,
@@ -28,6 +29,7 @@ export function AudioQuestion({
   nextExcludedTeamIds: string[];
   onAward: (teamId: string) => void;
   onIncorrect: (teamId: string) => void;
+  onUnlock: (teamId: string) => void;
   onNobodyGuessed: () => void;
   onBack: () => void;
   onClose: () => void;
@@ -114,6 +116,15 @@ export function AudioQuestion({
                     {excluded && <small>Пропускает эту песню</small>}
                     {!excluded && answeredIncorrectly && <small>Ответ неверный · больше не отвечает в этой песне · пропустит следующую</small>}
                     {!excluded && !answeredIncorrectly && penalizedNext && <small>Пропустит следующую песню</small>}
+                    {(excluded || answeredIncorrectly || penalizedNext) && (
+                      <button
+                        type="button"
+                        className="team-unlock-button"
+                        onClick={() => onUnlock(team.id)}
+                      >
+                        Разблокировать
+                      </button>
+                    )}
                   </div>
 
                   <button

@@ -53,6 +53,12 @@ type SeparateRequest = {
   sampleRate: number;
 };
 
+type PrepareRequest = {
+  type: 'prepare';
+};
+
+type WorkerRequest = SeparateRequest | PrepareRequest;
+
 type WorkerProgress = {
   type: 'progress';
   requestId: number;
@@ -75,7 +81,7 @@ type WorkerFailure = {
 
 type WorkerScope = typeof globalThis & {
   postMessage: (message: WorkerProgress | WorkerResult | WorkerFailure) => void;
-  addEventListener: (type: 'message', listener: (event: MessageEvent<SeparateRequest>) => void) => void;
+  addEventListener: (type: 'message', listener: (event: MessageEvent<WorkerRequest>) => void) => void;
 };
 
 const scope = globalThis as WorkerScope;
@@ -84,7 +90,10 @@ let processor: DemucsProcessorLike | null = null;
 let activeRequestId = 0;
 
 scope.addEventListener('message', (event) => {
-  if (event.data.type !== 'separate') return;
+  if (event.data.type === 'prepare') {
+    void getProcessor().catch(() => undefined);
+    return;
+  }
   void separate(event.data);
 });
 

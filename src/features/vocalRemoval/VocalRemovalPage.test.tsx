@@ -3,13 +3,21 @@ import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createInstrumentalMock, createTrimmedWavMock, addGeneratedTrackToLibraryMock } = vi.hoisted(() => ({
+const {
+  createInstrumentalMock,
+  createTrimmedWavMock,
+  addGeneratedTrackToLibraryMock,
+  prepareVocalSeparatorMock,
+  releaseVocalSeparatorMock,
+} = vi.hoisted(() => ({
   createInstrumentalMock: vi.fn(async () => new Blob(['minus'], { type: 'audio/wav' })),
   createTrimmedWavMock: vi.fn(async () => new Blob(['trimmed'], { type: 'audio/wav' })),
   addGeneratedTrackToLibraryMock: vi.fn(async (_blob: Blob, _fileName: string) => ({
     track: { id: 'track-added' },
     status: 'created' as 'created' | 'existing',
   })),
+  prepareVocalSeparatorMock: vi.fn(),
+  releaseVocalSeparatorMock: vi.fn(async () => undefined),
 }));
 
 vi.mock('./addGeneratedTrackToLibrary', () => ({
@@ -34,7 +42,8 @@ vi.mock('./separator', () => ({
     maxDecodeDurationSeconds: 8 * 60,
     recommendedDurationSeconds: 60,
   }),
-  releaseVocalSeparator: vi.fn(async () => undefined),
+  prepareVocalSeparator: prepareVocalSeparatorMock,
+  releaseVocalSeparator: releaseVocalSeparatorMock,
 }));
 
 import { FeedbackProvider } from '../../components/feedback/FeedbackProvider';
@@ -50,6 +59,8 @@ beforeEach(() => {
   createInstrumentalMock.mockClear();
   createTrimmedWavMock.mockClear();
   addGeneratedTrackToLibraryMock.mockClear();
+  prepareVocalSeparatorMock.mockClear();
+  releaseVocalSeparatorMock.mockClear();
 
   Object.defineProperty(URL, 'createObjectURL', {
     configurable: true,
@@ -74,6 +85,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   await act(async () => root.unmount());
   container.remove();
   vi.restoreAllMocks();
@@ -99,6 +111,46 @@ describe('VocalRemovalPage', () => {
     });
 
     expect(createInstrumentalMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('warms the separator as soon as the processing page becomes active', async () => {
+    await act(async () => {
+      root.render(withFeedback(<VocalRemovalPage active />));
+    });
+
+    expect(prepareVocalSeparatorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the prepared separator alive during a short sidebar switch', async () => {
+    vi.useFakeTimers();
+    await renderWithFile();
+    prepareVocalSeparatorMock.mockClear();
+    releaseVocalSeparatorMock.mockClear();
+
+    await act(async () => {
+      root.render(withFeedback(<VocalRemovalPage active={false} />));
+    });
+    expect(releaseVocalSeparatorMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.render(withFeedback(<VocalRemovalPage active />));
+    });
+    expect(releaseVocalSeparatorMock).not.toHaveBeenCalled();
+    expect(prepareVocalSeparatorMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('releases the prepared separator after five minutes away from the processing page', async () => {
+    vi.useFakeTimers();
+    await renderWithFile();
+    releaseVocalSeparatorMock.mockClear();
+
+    await act(async () => {
+      root.render(withFeedback(<VocalRemovalPage active={false} />));
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+    });
+
+    expect(releaseVocalSeparatorMock).toHaveBeenCalledTimes(1);
   });
 
   it('disables full-track separation when the source exceeds the memory-safe limit', async () => {

@@ -20,6 +20,7 @@ export type GameSessionCommand =
   | { type: 'closeQuestion'; completed: boolean; advanceStage?: boolean }
   | { type: 'awardTeam'; teamId: string }
   | { type: 'markTeamIncorrect'; teamId: string }
+  | { type: 'unlockTeam'; teamId: string }
   | { type: 'nobodyGuessed' }
   | { type: 'changeTeamScore'; teamId: string; score: number }
   | { type: 'nextStage' }
@@ -85,6 +86,7 @@ export function transitionGameSession(
       const nextStageIndex = command.advanceStage
         ? Math.min(session.stageIndex + 1, game.stages.length)
         : session.stageIndex;
+      const stageChanged = nextStageIndex !== session.stageIndex;
       return withSessionCheckpoint(session, {
         stageIndex: nextStageIndex,
         stageId: game.stages[nextStageIndex]?.id ?? null,
@@ -95,7 +97,7 @@ export function transitionGameSession(
         answerRevealed: false,
         activeExcludedTeamIds: [],
         currentIncorrectTeamIds: [],
-        nextExcludedTeamIds: unique(session.nextExcludedTeamIds),
+        nextExcludedTeamIds: stageChanged ? [] : unique(session.nextExcludedTeamIds),
       }, now);
     }
 
@@ -135,6 +137,21 @@ export function transitionGameSession(
         updatedAt: now(),
         currentIncorrectTeamIds: unique([...session.currentIncorrectTeamIds, command.teamId]),
         nextExcludedTeamIds: unique([...session.nextExcludedTeamIds, command.teamId]),
+      };
+    }
+
+    case 'unlockTeam': {
+      if (
+        !game.teams.some((team) => team.id === command.teamId)
+        || !isTeamBlocked(session, command.teamId)
+      ) return session;
+
+      return {
+        ...session,
+        updatedAt: now(),
+        activeExcludedTeamIds: withoutTeam(session.activeExcludedTeamIds, command.teamId),
+        currentIncorrectTeamIds: withoutTeam(session.currentIncorrectTeamIds, command.teamId),
+        nextExcludedTeamIds: withoutTeam(session.nextExcludedTeamIds, command.teamId),
       };
     }
 
@@ -186,6 +203,7 @@ export function transitionGameSession(
         answerRevealed: false,
         activeExcludedTeamIds: [],
         currentIncorrectTeamIds: [],
+        nextExcludedTeamIds: [],
       }, now);
     }
 
@@ -208,6 +226,16 @@ function safeAddScore(current: number, delta: number) {
 
 function unique(values: string[]) {
   return [...new Set(values)];
+}
+
+function withoutTeam(values: string[], teamId: string) {
+  return values.filter((id) => id !== teamId);
+}
+
+function isTeamBlocked(session: GameSession, teamId: string) {
+  return session.activeExcludedTeamIds.includes(teamId)
+    || session.currentIncorrectTeamIds.includes(teamId)
+    || session.nextExcludedTeamIds.includes(teamId);
 }
 
 export { canNavigateBack, createSessionCheckpoint } from './sessionHistory';

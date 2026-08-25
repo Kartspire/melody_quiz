@@ -7,6 +7,7 @@ import { clampNumber } from './audioTime';
 import {
   createInstrumental,
   getVocalRemovalCapabilities,
+  prepareVocalSeparator,
   releaseVocalSeparator,
   type VocalRemovalProgress,
 } from './separator';
@@ -29,6 +30,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const separationAbortRef = useRef<AbortController | null>(null);
   const clipAbortRef = useRef<AbortController | null>(null);
+  const separatorReleaseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [sourceDuration, setSourceDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
@@ -60,20 +62,37 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const canProcessFullTrack = sourceDuration > 0 && !sourceTooLongToDecode && !fullTrackTooLong;
 
   useEffect(() => () => {
+    if (separatorReleaseTimerRef.current) clearTimeout(separatorReleaseTimerRef.current);
     separationAbortRef.current?.abort();
     clipAbortRef.current?.abort();
     void releaseVocalSeparator();
   }, []);
 
   useEffect(() => {
-    if (active) return;
+    if (active) {
+      if (separatorReleaseTimerRef.current) {
+        clearTimeout(separatorReleaseTimerRef.current);
+        separatorReleaseTimerRef.current = null;
+      }
+      prepareVocalSeparator();
+      return;
+    }
+
     setDragging(false);
     separationAbortRef.current?.abort();
     clipAbortRef.current?.abort();
-    void releaseVocalSeparator();
+    if (separatorReleaseTimerRef.current) clearTimeout(separatorReleaseTimerRef.current);
+    separatorReleaseTimerRef.current = setTimeout(() => {
+      separatorReleaseTimerRef.current = null;
+      void releaseVocalSeparator();
+    }, 5 * 60 * 1000);
+
+    return () => {
+      if (!separatorReleaseTimerRef.current) return;
+      clearTimeout(separatorReleaseTimerRef.current);
+      separatorReleaseTimerRef.current = null;
+    };
   }, [active]);
-
-
 
   const clearTrimDependentResults = () => {
     setTrimResult(null);
@@ -201,22 +220,6 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
     }
   };
 
-  const reset = () => {
-    if (working) return;
-    setFile(null);
-    setSourceDuration(0);
-    setTrimStart(0);
-    setTrimEnd(0);
-    setTrimResult(null);
-    setMinusResult(null);
-    setMinusScope('full');
-    setLibraryResults({});
-    setLibraryError(null);
-    setError(null);
-    setProgress(INITIAL_PROGRESS);
-    if (inputRef.current) inputRef.current.value = '';
-  };
-
   const clipOutputName = file ? buildClipOutputName(file.name) : 'fragment.wav';
   const minusOutputName = file ? buildMinusOutputName(file.name, minusScope) : 'minus.wav';
 
@@ -318,7 +321,6 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
             addDisabled={working || Boolean(libraryResults.minus)}
             libraryError={libraryError?.kind === 'minus' ? libraryError.message : undefined}
             onAdd={() => void addResultToLibrary('minus', minusResult, minusOutputName)}
-            onReset={reset}
           />
         )}
       </section>

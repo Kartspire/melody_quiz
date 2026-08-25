@@ -1,17 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeGame,
-  $games,
   $hydrated,
   $persistedState,
   $screen,
   $storageError,
   $storageReadOnly,
   $storageSaveStatus,
-  $sessions,
-  gameLaunchRequested,
-  hasSessionProgress,
   screenChanged,
   storageRetryRequested,
   storageSaveRetryRequested,
@@ -29,12 +25,10 @@ import { exportAppBackup } from '../lib/appBackup';
 import { downloadBlob } from '../lib/download';
 
 export function App() {
-  const [screen, hydrated, activeGame, games, sessions, storageError, storageReadOnly, storageSaveStatus, persistedState] = useUnit([
+  const [screen, hydrated, activeGame, storageError, storageReadOnly, storageSaveStatus, persistedState] = useUnit([
     $screen,
     $hydrated,
     $activeGame,
-    $games,
-    $sessions,
     $storageError,
     $storageReadOnly,
     $storageSaveStatus,
@@ -59,14 +53,6 @@ export function App() {
       setEmergencyBackupBusy(false);
     }
   };
-
-  const savedSessionGames = useMemo(
-    () => games.filter((game) => hasSessionProgress(sessions[game.id])).sort((a, b) => (sessions[b.id]?.updatedAt ?? b.updatedAt) - (sessions[a.id]?.updatedAt ?? a.updatedAt)),
-    [games, sessions],
-  );
-  const sidebarGame = savedSessionGames[0] ?? null;
-  const sidebarSession = sidebarGame ? sessions[sidebarGame.id] : null;
-  const sidebarFinished = Boolean(sidebarGame && sidebarSession && sidebarSession.stageIndex >= sidebarGame.stages.length);
 
   if (!hydrated) {
     if (storageError) {
@@ -155,22 +141,6 @@ export function App() {
                   ? 'Изменения сохранены'
                   : ''}
         </small>
-
-        {screen !== 'library' && sidebarGame && sidebarSession && (
-          <section className="active-session-card">
-            <div className="active-session-card__status"><span /> {sidebarFinished ? 'Игра завершена' : 'Сохранённая партия'}</div>
-            <strong>{sidebarGame.title || 'Без названия'}</strong>
-            <small>
-              {sidebarFinished
-                ? `Сыграно ${sidebarSession.completedQuestionIds.length} вопросов`
-                : `Этап ${Math.min(sidebarSession.stageIndex + 1, sidebarGame.stages.length)} из ${sidebarGame.stages.length} · сыграно ${sidebarSession.completedQuestionIds.length}`}
-              {savedSessionGames.length > 1 ? ` · ещё партий: ${savedSessionGames.length - 1}` : ''}
-            </small>
-            <button onClick={() => gameLaunchRequested({ gameId: sidebarGame.id, mode: 'continue' })}>
-              {sidebarFinished ? 'Открыть результаты →' : 'Продолжить →'}
-            </button>
-          </section>
-        )}
       </aside>
 
       <GameLaunchDialog />

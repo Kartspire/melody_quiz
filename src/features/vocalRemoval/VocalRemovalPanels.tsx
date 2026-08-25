@@ -200,7 +200,6 @@ export function VocalResultPanel({
   addDisabled,
   libraryError,
   onAdd,
-  onReset,
 }: {
   outputName: string;
   scope: MinusScope;
@@ -212,7 +211,6 @@ export function VocalResultPanel({
   addDisabled: boolean;
   libraryError?: string;
   onAdd: () => void;
-  onReset: () => void;
 }) {
   return (
     <section className="vocal-result-card">
@@ -225,7 +223,6 @@ export function VocalResultPanel({
       <div className="vocal-result-actions">
         <a className="primary-button vocal-download-button" href={source} download={outputName}>Скачать минус WAV</a>
         <button className="secondary-button" disabled={addDisabled} onClick={onAdd}>{addLabel}</button>
-        <button className="secondary-button" disabled={disabled} onClick={onReset}>Обработать другой трек</button>
       </div>
       {libraryError && <small className="vocal-library-error" role="alert">{libraryError}</small>}
     </section>

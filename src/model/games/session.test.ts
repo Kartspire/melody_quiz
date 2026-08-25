@@ -1,6 +1,6 @@
 import { allSettled, fork } from 'effector';
 import { describe, expect, it } from 'vitest';
-import { createGame, createInterRoundStage, createSession } from '../defaults';
+import { createGame, createInterRoundStage, createRound, createRoundStage, createSession } from '../defaults';
 import { createCommonTheme4InterRound } from '../../interRounds/templates';
 import { $activeGameId, $games, $sessions } from '../core/state';
 import {
@@ -12,6 +12,7 @@ import {
   questionOpened,
   teamAwarded,
   teamIncorrectToggled,
+  teamUnlocked,
 } from './session';
 
 describe('game session event flow', () => {
@@ -48,6 +49,58 @@ describe('game session event flow', () => {
     expect(nextSong.activeExcludedTeamIds).toContain(teamId);
     expect(nextSong.currentIncorrectTeamIds).not.toContain(teamId);
     expect(nextSong.nextExcludedTeamIds).not.toContain(teamId);
+  });
+
+
+  it('allows a manually blocked team to be unlocked', async () => {
+    const game = createGame('Manual unlock flow');
+    const session = createSession(game);
+    const question = game.rounds[0].categories[0].questions[0];
+    const teamId = game.teams[0].id;
+    const scope = fork({
+      values: [
+        [$games, [game]],
+        [$activeGameId, game.id],
+        [$sessions, { [game.id]: session }],
+      ],
+    });
+
+    await allSettled(questionOpened, { scope, params: question.id });
+    await allSettled(teamIncorrectToggled, { scope, params: teamId });
+    await allSettled(teamUnlocked, { scope, params: teamId });
+
+    const unlocked = scope.getState($sessions)[game.id];
+    expect(unlocked.activeExcludedTeamIds).not.toContain(teamId);
+    expect(unlocked.currentIncorrectTeamIds).not.toContain(teamId);
+    expect(unlocked.nextExcludedTeamIds).not.toContain(teamId);
+  });
+
+  it('does not carry next-song penalties into another round', async () => {
+    const game = createGame('Round reset flow');
+    const secondRound = createRound(1);
+    game.rounds.push(secondRound);
+    game.stages.push(createRoundStage(secondRound.id));
+    const session = createSession(game);
+    const question = game.rounds[0].categories[0].questions[0];
+    const [penalizedTeam, winningTeam] = game.teams;
+    const scope = fork({
+      values: [
+        [$games, [game]],
+        [$activeGameId, game.id],
+        [$sessions, { [game.id]: session }],
+      ],
+    });
+
+    await allSettled(questionOpened, { scope, params: question.id });
+    await allSettled(teamIncorrectToggled, { scope, params: penalizedTeam.id });
+    await allSettled(teamAwarded, { scope, params: winningTeam.id });
+    await allSettled(questionClosed, { scope, params: { completed: true, advanceStage: true } });
+
+    const nextRound = scope.getState($sessions)[game.id];
+    expect(nextRound.stageIndex).toBe(1);
+    expect(nextRound.activeExcludedTeamIds).toEqual([]);
+    expect(nextRound.currentIncorrectTeamIds).toEqual([]);
+    expect(nextRound.nextExcludedTeamIds).toEqual([]);
   });
 
   it('returns from an answer to the same question and rolls back the automatic award', async () => {
