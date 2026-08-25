@@ -1,12 +1,14 @@
-import { encodeStereoWav } from './wav';
-
-const SAMPLE_RATE = 44_100;
-const MAX_SOURCE_BYTES = 100 * 1024 * 1024;
-const MAX_DURATION_SECONDS = 8 * 60;
-const ORT_MODULE_URL = 'https://unpkg.com/onnxruntime-web@1.27.0/dist/ort.webgpu.bundle.min.mjs';
-const ORT_WASM_BASE_URL = 'https://unpkg.com/onnxruntime-web@1.27.0/dist/';
-const DEMUCS_MODULE_URL = 'https://unpkg.com/demucs-web@1.0.2/src/index.js';
-const MODEL_URL = 'https://huggingface.co/timcsy/demucs-web-onnx/resolve/main/htdemucs_embedded.onnx';
+import {
+  AUDIO_PROCESSING_SAMPLE_RATE,
+  MAX_AUDIO_DECODE_SECONDS,
+  MAX_AUDIO_SOURCE_BYTES,
+  MAX_VOCAL_REMOVAL_SECONDS,
+  RECOMMENDED_VOCAL_REMOVAL_SECONDS,
+  assertAudioProcessingFile,
+  assertDecodableDuration,
+  assertVocalRemovalDuration,
+} from './audioProcessingLimits';
+import { readAudioDuration } from './audioMetadata';
 
 export type VocalRemovalPhase =
   | 'runtime'
@@ -24,52 +26,38 @@ export type VocalRemovalProgress = {
 
 type ProgressHandler = (progress: VocalRemovalProgress) => void;
 
-type Stem = {
-  left: Float32Array;
-  right: Float32Array;
+type WorkerProgressMessage = VocalRemovalProgress & {
+  type: 'progress';
+  requestId: number;
 };
 
-type SeparationResult = {
-  drums: Stem;
-  bass: Stem;
-  other: Stem;
-  vocals: Stem;
+type WorkerResultMessage = {
+  type: 'result';
+  requestId: number;
+  blob: Blob;
 };
 
-type DemucsProcessorLike = {
-  onProgress: (info: { progress: number; currentSegment: number; totalSegments: number }) => void;
-  onLog: (phase: string, message: string) => void;
-  onDownloadProgress: (loaded: number, total: number) => void;
-  session?: { release?: () => Promise<void> | void } | null;
-  loadModel: (pathOrBuffer?: string | ArrayBuffer) => Promise<unknown>;
-  separate: (left: Float32Array, right: Float32Array) => Promise<SeparationResult>;
+type WorkerErrorMessage = {
+  type: 'error';
+  requestId: number;
+  error: { name: string; message: string; stack?: string };
 };
 
-type DemucsModule = {
-  DemucsProcessor: new (options: {
-    ort: unknown;
-    sessionOptions?: Record<string, unknown>;
-    onProgress?: DemucsProcessorLike['onProgress'];
-    onLog?: DemucsProcessorLike['onLog'];
-    onDownloadProgress?: DemucsProcessorLike['onDownloadProgress'];
-  }) => DemucsProcessorLike;
+type SeparatorWorkerMessage = WorkerProgressMessage | WorkerResultMessage | WorkerErrorMessage;
+
+type ActiveRequest = {
+  requestId: number;
+  onProgress: ProgressHandler;
+  resolve: (blob: Blob) => void;
+  reject: (error: unknown) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 };
 
-type OrtModule = {
-  env: {
-    wasm: {
-      wasmPaths?: string;
-      numThreads?: number;
-    };
-  };
-};
-
-let processorPromise: Promise<DemucsProcessorLike> | null = null;
-let processor: DemucsProcessorLike | null = null;
-let activeProgressHandler: ProgressHandler | null = null;
+let separatorWorker: Worker | null = null;
+let activeRequest: ActiveRequest | null = null;
+let nextRequestId = 1;
 let separationInProgress = false;
-let releaseRequested = false;
-let activeAbortSignal: AbortSignal | null = null;
 
 export async function createInstrumental(
   file: File,
@@ -77,197 +65,205 @@ export async function createInstrumental(
   signal?: AbortSignal,
 ): Promise<Blob> {
   if (separationInProgress) throw new Error('Сейчас уже обрабатывается другой трек.');
-  assertSupportedFile(file);
-
+  assertAudioProcessingFile(file);
   signal?.throwIfAborted();
   separationInProgress = true;
-  releaseRequested = false;
-  activeProgressHandler = onProgress;
-  activeAbortSignal = signal ?? null;
 
-  let audioContext: AudioContext | null = null;
   try {
-    emit('runtime', null, 'Подготавливаем модуль разделения…');
-    const currentProcessor = await getProcessor();
+    onProgress({ phase: 'decode', progress: null, message: 'Проверяем длительность аудиофайла…' });
+    const metadataDuration = await readAudioDuration(file, signal);
+    assertDecodableDuration(metadataDuration);
+    assertVocalRemovalDuration(metadataDuration);
     signal?.throwIfAborted();
 
-    emit('decode', null, 'Декодируем аудиофайл…');
-    audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
-    const sourceBytes = await file.arrayBuffer();
-    signal?.throwIfAborted();
-    const decoded = await audioContext.decodeAudioData(sourceBytes);
+    onProgress({ phase: 'decode', progress: null, message: 'Декодируем аудиофайл…' });
+    const decoded = await decodeStereo(file, signal);
+    assertVocalRemovalDuration(decoded.duration);
     signal?.throwIfAborted();
 
-    if (!Number.isFinite(decoded.duration) || decoded.duration <= 0) {
-      throw new Error('Не удалось определить длительность аудиофайла.');
-    }
-    if (decoded.duration > MAX_DURATION_SECONDS) {
-      throw new Error('Трек слишком длинный. Для обработки в браузере поддерживаются файлы до 8 минут.');
-    }
-
-    const left = new Float32Array(decoded.getChannelData(0));
-    const right = decoded.numberOfChannels > 1
-      ? new Float32Array(decoded.getChannelData(1))
-      : new Float32Array(left);
-
-    emit('separate', 0, 'Отделяем вокал от музыки…');
-    let result: SeparationResult | null = await currentProcessor.separate(left, right);
-    signal?.throwIfAborted();
-
-    emit('encode', null, 'Собираем инструментальную дорожку…');
-    const instrumental = mixInstrumental(result);
-    result = null;
-    signal?.throwIfAborted();
-
-    return encodeStereoWav(instrumental.left, instrumental.right, SAMPLE_RATE);
+    return await separateInWorker(decoded.left, decoded.right, onProgress, signal);
   } catch (error) {
-    if (!processor) processorPromise = null;
+    if (signal?.aborted) throw createAbortError();
     throw normalizeSeparationError(error);
   } finally {
-    activeProgressHandler = null;
-    activeAbortSignal = null;
     separationInProgress = false;
-    if (audioContext) void audioContext.close().catch(() => undefined);
-    if (releaseRequested) void releaseVocalSeparator();
   }
 }
 
 export async function releaseVocalSeparator() {
-  if (separationInProgress) {
-    releaseRequested = true;
-    return;
+  const request = activeRequest;
+  if (request) {
+    clearActiveRequest();
+    request.reject(createAbortError());
   }
-
-  const current = processor;
-  processor = null;
-  processorPromise = null;
-  releaseRequested = false;
-  try {
-    await current?.session?.release?.();
-  } catch (error) {
-    console.warn('Failed to release vocal separator session', error);
-  }
+  terminateWorker();
 }
 
 export function getVocalRemovalCapabilities() {
   return {
     webGpu: typeof navigator !== 'undefined' && 'gpu' in navigator,
     crossOriginIsolated: globalThis.crossOriginIsolated === true,
-    maxSourceBytes: MAX_SOURCE_BYTES,
-    maxDurationSeconds: MAX_DURATION_SECONDS,
+    maxSourceBytes: MAX_AUDIO_SOURCE_BYTES,
+    maxDurationSeconds: MAX_VOCAL_REMOVAL_SECONDS,
+    maxDecodeDurationSeconds: MAX_AUDIO_DECODE_SECONDS,
+    recommendedDurationSeconds: RECOMMENDED_VOCAL_REMOVAL_SECONDS,
   };
 }
 
-async function getProcessor() {
-  if (processor) return processor;
-  if (processorPromise) return processorPromise;
+async function decodeStereo(file: File, signal?: AbortSignal) {
+  let audioContext: AudioContext | null = null;
+  let abortHandler: (() => void) | null = null;
 
-  processorPromise = (async () => {
-    emit('runtime', null, 'Загружаем локальный ML-runtime…');
-    const [ort, demucs] = await Promise.all([
-      importRemote<OrtModule>(ORT_MODULE_URL),
-      importRemote<DemucsModule>(DEMUCS_MODULE_URL),
-    ]);
+  try {
+    audioContext = new AudioContext({ sampleRate: AUDIO_PROCESSING_SAMPLE_RATE });
+    const context = audioContext;
+    abortHandler = () => {
+      void context.close().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', abortHandler, { once: true });
 
-    ort.env.wasm.wasmPaths = ORT_WASM_BASE_URL;
-    ort.env.wasm.numThreads = globalThis.crossOriginIsolated
-      ? Math.max(1, Math.min(4, navigator.hardwareConcurrency || 1))
-      : 1;
+    const sourceBytes = await file.arrayBuffer();
+    signal?.throwIfAborted();
+    const decoded = await context.decodeAudioData(sourceBytes);
+    signal?.throwIfAborted();
 
-    const created = new demucs.DemucsProcessor({
-      ort,
-      sessionOptions: {
-        enableCpuMemArena: false,
-        enableMemPattern: false,
-      },
-      onProgress: ({ progress, currentSegment, totalSegments }) => {
-        emit(
-          'separate',
-          clampProgress(progress),
-          `Отделяем вокал: фрагмент ${currentSegment} из ${totalSegments}`,
-        );
-      },
-      onDownloadProgress: (loaded, total) => {
-        emit(
-          'model-download',
-          total > 0 ? clampProgress(loaded / total) : null,
-          `Загружаем модель: ${formatMegabytes(loaded)} из ${formatMegabytes(total)}`,
-        );
-      },
-      onLog: (phase, message) => {
-        if (phase === 'model' && /loading/i.test(message)) {
-          emit('model-init', null, 'Подготавливаем модель HTDemucs…');
-        }
-      },
-    });
+    if (!Number.isFinite(decoded.duration) || decoded.duration <= 0) {
+      throw new Error('Не удалось определить длительность аудиофайла.');
+    }
 
-    emit('model-download', 0, 'Загружаем модель HTDemucs (~180 МБ)…');
-    await created.loadModel(MODEL_URL);
-    emit('model-init', 1, 'Модель готова');
-    processor = created;
-    return created;
-  })().catch((error) => {
-    processorPromise = null;
-    processor = null;
-    throw error;
-  });
+    const left = decoded.getChannelData(0).slice();
+    const right = decoded.numberOfChannels > 1
+      ? decoded.getChannelData(1).slice()
+      : left.slice();
 
-  return processorPromise;
-}
-
-function mixInstrumental(result: SeparationResult) {
-  const length = Math.min(
-    result.drums.left.length,
-    result.drums.right.length,
-    result.bass.left.length,
-    result.bass.right.length,
-    result.other.left.length,
-    result.other.right.length,
-  );
-  const left = new Float32Array(length);
-  const right = new Float32Array(length);
-  let peak = 0;
-
-  for (let index = 0; index < length; index += 1) {
-    const leftValue = result.drums.left[index] + result.bass.left[index] + result.other.left[index];
-    const rightValue = result.drums.right[index] + result.bass.right[index] + result.other.right[index];
-    left[index] = leftValue;
-    right[index] = rightValue;
-    peak = Math.max(peak, Math.abs(leftValue), Math.abs(rightValue));
-  }
-
-  if (peak > 0.99) {
-    const gain = 0.99 / peak;
-    for (let index = 0; index < length; index += 1) {
-      left[index] *= gain;
-      right[index] *= gain;
+    return { left, right, duration: decoded.duration };
+  } finally {
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+    if (audioContext && audioContext.state !== 'closed') {
+      await audioContext.close().catch(() => undefined);
     }
   }
-
-  return { left, right };
 }
 
-function assertSupportedFile(file: File) {
-  if (!(file instanceof File) || file.size <= 0) throw new Error('Выберите непустой аудиофайл.');
-  if (file.size > MAX_SOURCE_BYTES) {
-    throw new Error('Файл слишком большой. Максимальный размер для браузерной обработки — 100 МБ.');
+function separateInWorker(
+  left: Float32Array,
+  right: Float32Array,
+  onProgress: ProgressHandler,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  if (activeRequest) throw new Error('Сейчас уже обрабатывается другой трек.');
+
+  const worker = getWorker();
+  const requestId = nextRequestId++;
+
+  return new Promise<Blob>((resolve, reject) => {
+    const request: ActiveRequest = { requestId, onProgress, resolve, reject, signal };
+    if (signal) {
+      request.onAbort = () => {
+        if (activeRequest?.requestId !== requestId) return;
+        const rejection = createAbortError();
+        clearActiveRequest();
+        terminateWorker();
+        reject(rejection);
+      };
+      signal.addEventListener('abort', request.onAbort, { once: true });
+    }
+    activeRequest = request;
+    if (signal?.aborted) {
+      request.onAbort?.();
+      return;
+    }
+
+    try {
+      worker.postMessage(
+      {
+        type: 'separate',
+        requestId,
+        left: left.buffer,
+        right: right.buffer,
+        sampleRate: AUDIO_PROCESSING_SAMPLE_RATE,
+      },
+        [left.buffer, right.buffer],
+      );
+    } catch (error) {
+      clearActiveRequest();
+      terminateWorker();
+      reject(error);
+    }
+  });
+}
+
+function getWorker() {
+  if (separatorWorker) return separatorWorker;
+
+  const worker = new Worker(new URL('./separator.worker.ts', import.meta.url), { type: 'module' });
+  worker.addEventListener('message', handleWorkerMessage);
+  worker.addEventListener('error', handleWorkerCrash);
+  separatorWorker = worker;
+  return worker;
+}
+
+function handleWorkerMessage(event: MessageEvent<SeparatorWorkerMessage>) {
+  const message = event.data;
+  const request = activeRequest;
+  if (!request || message.requestId !== request.requestId) return;
+
+  if (message.type === 'progress') {
+    if (!request.signal?.aborted) {
+      request.onProgress({ phase: message.phase, progress: message.progress, message: message.message });
+    }
+    return;
   }
-  const knownAudioExtension = /\.(mp3|wav|ogg|oga|m4a|aac|flac|webm)$/i.test(file.name);
-  if (file.type && !file.type.startsWith('audio/') && !knownAudioExtension) {
-    throw new Error('Выбранный файл не похож на аудио. Используйте MP3, WAV, OGG, M4A или другой формат, который читает браузер.');
+
+  clearActiveRequest();
+  if (message.type === 'result') {
+    request.resolve(message.blob);
+    return;
   }
+
+  const error = new Error(message.error.message);
+  error.name = message.error.name || 'Error';
+  if (message.error.stack) error.stack = message.error.stack;
+  terminateWorker();
+  request.reject(error);
+}
+
+function handleWorkerCrash(event: ErrorEvent) {
+  const request = activeRequest;
+  clearActiveRequest();
+  terminateWorker();
+  request?.reject(new Error(event.message || 'ML Worker завершился с ошибкой.'));
+}
+
+function clearActiveRequest() {
+  if (!activeRequest) return;
+  if (activeRequest.signal && activeRequest.onAbort) {
+    activeRequest.signal.removeEventListener('abort', activeRequest.onAbort);
+  }
+  activeRequest = null;
+}
+
+function terminateWorker() {
+  const worker = separatorWorker;
+  separatorWorker = null;
+  if (!worker) return;
+  worker.removeEventListener('message', handleWorkerMessage);
+  worker.removeEventListener('error', handleWorkerCrash);
+  worker.terminate();
 }
 
 function normalizeSeparationError(error: unknown) {
+  if (isAbortError(error)) return createAbortError();
   if (error instanceof Error) {
     const message = error.message || '';
     if (/fetch|network|failed to load|dynamically imported/i.test(message)) {
       return new Error('Не удалось загрузить модель или ML-модуль. Проверьте подключение к интернету и попробуйте ещё раз.');
     }
     if (/memory|allocation|out of memory/i.test(message)) {
-      return new Error('Браузеру не хватило памяти для обработки трека. Закройте лишние вкладки или попробуйте файл короче.');
+      return new Error('Браузеру не хватило памяти для обработки трека. Выберите более короткий фрагмент и попробуйте ещё раз.');
     }
-    if (/decode|encoding|media|audio/i.test(message)) {
+    if (/decode|encoding|media|audio/i.test(message) && !/длительност/i.test(message)) {
       return new Error(`Не удалось прочитать аудиофайл: ${message}`);
     }
     return error;
@@ -275,21 +271,10 @@ function normalizeSeparationError(error: unknown) {
   return new Error('Не удалось сделать минус. Попробуйте другой аудиофайл.');
 }
 
-function emit(phase: VocalRemovalPhase, progress: number | null, message: string) {
-  if (activeAbortSignal?.aborted) return;
-  activeProgressHandler?.({ phase, progress, message });
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
-function clampProgress(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(1, value));
-}
-
-function formatMegabytes(bytes: number) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 МБ';
-  return `${(bytes / 1024 / 1024).toFixed(bytes > 100 * 1024 * 1024 ? 0 : 1)} МБ`;
-}
-
-async function importRemote<T>(url: string): Promise<T> {
-  return import(/* @vite-ignore */ url) as Promise<T>;
+function createAbortError() {
+  return new DOMException('Операция отменена.', 'AbortError');
 }

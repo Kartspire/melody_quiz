@@ -1,5 +1,6 @@
 import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from './limits';
 import { getInterRoundTrackIds } from '../interRounds/templates';
+import { hasAvailableAudioAssetReference, isVerifiedAudioAsset } from './media/domain/audioAsset';
 import {
   isPersistableTeamName,
   isValidContinueLyricsCutAtMs,
@@ -340,7 +341,7 @@ export function assertValidPersistedState(state: PersistedState): void {
   }
   const audioIds = new Set<string>();
   for (const asset of state.audioAssets) {
-    if (!asset || !isSha256(asset.id) || asset.sha256 !== asset.id || !(asset.blob instanceof Blob) || asset.blob.size <= 0 || asset.verified !== true) throw new Error('Локальное хранилище содержит повреждённую запись аудио.');
+    if (!isVerifiedAudioAsset(asset)) throw new Error('Локальное хранилище содержит повреждённую запись аудио.');
     if (audioIds.has(asset.id)) throw new Error(`Аудиофайл «${asset.id}» продублирован в локальном хранилище.`);
     audioIds.add(asset.id);
   }
@@ -469,10 +470,6 @@ export function isBoundedText(value: unknown, maxLength: number): value is strin
 }
 
 function hasPlayableTrack(trackId: string | undefined, trackById: Map<string, MediaTrack>, audioById: Map<string, AudioAsset>) {
-  if (!trackId) return false;
-  const track = trackById.get(trackId);
-  if (!track) return false;
-  const asset = audioById.get(track.audioId);
-  return Boolean(asset && asset.id === asset.sha256 && isSha256(asset.id) && asset.verified === true && asset.blob instanceof Blob && asset.blob.size > 0);
+  return hasAvailableAudioAssetReference(trackId, trackById, audioById);
 }
 

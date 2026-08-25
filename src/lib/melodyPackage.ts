@@ -5,7 +5,9 @@ import { createSession } from '../model/defaults';
 import { normalizeGameConfig } from '../model/migrations';
 import { getInterRoundTrackIds, remapInterRoundTrackIds } from '../interRounds/templates';
 import { DATA_LIMITS } from '../model/limits';
-import { assertValidMediaTrack, assertValidSong, getGameStartIssues, getGameStorageIssues, isSha256 } from '../model/validation';
+import { isVerifiedAudioAsset } from '../model/media/domain/audioAsset';
+import { findEquivalentMediaTrack, findEquivalentSong } from '../model/media/domain/libraryIdentity';
+import { assertValidMediaTrack, assertValidSong, getGameStartIssues, getGameStorageIssues } from '../model/validation';
 import type { AudioAsset, GameConfig, MediaTrack, PersistedState, Song } from '../model/types';
 import {
   MELODY_PACKAGE_FORMAT_VERSION,
@@ -26,6 +28,7 @@ import type {
   PackageSong,
 } from './melodyPackageSchema';
 
+export { downloadBlob } from './download';
 export { MELODY_PACKAGE_FORMAT_VERSION } from './melodyPackageSchema';
 export type { MelodyPackageKind, MelodyPackageManifest, PackageAudioRef, PackageMediaTrack, PackageSong } from './melodyPackageSchema';
 
@@ -215,7 +218,7 @@ export async function prepareMediaMerge(
 ): Promise<PreparedMediaMerge> {
   const hashToAudioId = new Map<string, string>();
   for (const asset of currentAudioAssets) {
-    if (!isSha256(asset.id) || asset.sha256 !== asset.id || asset.verified !== true) throw new Error('Локальная медиатека содержит аудио старого формата. Перезагрузите приложение, чтобы завершить миграцию.');
+    if (!isVerifiedAudioAsset(asset)) throw new Error('Локальная медиатека содержит повреждённое аудио. Перезагрузите приложение и повторите операцию.');
     hashToAudioId.set(asset.sha256, asset.id);
   }
   currentMediaTracks.forEach(assertValidMediaTrack);
@@ -234,17 +237,24 @@ export async function prepareMediaMerge(
   const trackIdMap = new Map<string, string>();
   let newTracks = 0;
   let reusedTracks = 0;
-  const deduplicatedTracks = 0;
+  let deduplicatedTracks = 0;
 
   for (const packageTrack of packageData.tracks) {
     const existingById = currentTrackById.get(packageTrack.id);
     if (
       existingById
-      && normalizeText(existingById.name) === normalizeText(packageTrack.name)
-      && existingById.audioId === packageTrack.audio.sha256
+      && findEquivalentMediaTrack([existingById], packageTrack.audio.sha256, packageTrack.name)
     ) {
       trackIdMap.set(packageTrack.id, existingById.id);
       reusedTracks += 1;
+      countAudioReuse(packageTrack.audio.sha256, initialAudioHashes, newAudioHashes, usedExistingAudioHashes, () => { internalAudioReuses += 1; });
+      continue;
+    }
+
+    const equivalentTrack = findEquivalentMediaTrack(currentMediaTracks, packageTrack.audio.sha256, packageTrack.name);
+    if (equivalentTrack) {
+      trackIdMap.set(packageTrack.id, equivalentTrack.id);
+      deduplicatedTracks += 1;
       countAudioReuse(packageTrack.audio.sha256, initialAudioHashes, newAudioHashes, usedExistingAudioHashes, () => { internalAudioReuses += 1; });
       continue;
     }
@@ -278,7 +288,7 @@ export async function prepareMediaMerge(
   const songIdMap = new Map<string, string>();
   let newSongs = 0;
   let reusedSongs = 0;
-  const deduplicatedSongs = 0;
+  let deduplicatedSongs = 0;
 
   for (const packageSong of packageData.songs) {
     const minusTrackId = packageSong.minusTrackId ? trackIdMap.get(packageSong.minusTrackId) : undefined;
@@ -286,16 +296,23 @@ export async function prepareMediaMerge(
     if (packageSong.minusTrackId && !minusTrackId) throw new Error(`Не удалось сопоставить минус песни «${packageSong.artist} — ${packageSong.title}».`);
     if (packageSong.plusTrackId && !plusTrackId) throw new Error(`Не удалось сопоставить плюс песни «${packageSong.artist} — ${packageSong.title}».`);
 
+    const candidateSong = {
+      artist: packageSong.artist,
+      title: packageSong.title,
+      minusTrackId,
+      plusTrackId,
+    };
     const existingById = currentSongById.get(packageSong.id);
-    if (
-      existingById
-      && normalizeText(existingById.artist) === normalizeText(packageSong.artist)
-      && normalizeText(existingById.title) === normalizeText(packageSong.title)
-      && existingById.minusTrackId === minusTrackId
-      && existingById.plusTrackId === plusTrackId
-    ) {
+    if (existingById && findEquivalentSong([existingById], candidateSong)) {
       songIdMap.set(packageSong.id, existingById.id);
       reusedSongs += 1;
+      continue;
+    }
+
+    const equivalentSong = findEquivalentSong(currentSongs, candidateSong);
+    if (equivalentSong) {
+      songIdMap.set(packageSong.id, equivalentSong.id);
+      deduplicatedSongs += 1;
       continue;
     }
 
@@ -381,18 +398,6 @@ export function finalizeLibraryImport(preparedMedia: PreparedMediaMerge, state: 
   return { ...state, songs: preparedMedia.songs, mediaTracks: preparedMedia.mediaTracks, audioAssets: preparedMedia.audioAssets };
 }
 
-export function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.style.display = 'none';
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
 function serializeSongs(songs: Song[], trackIds: Set<string>): PackageSong[] {
   if (!Array.isArray(songs) || songs.length > DATA_LIMITS.packageSongs) throw new Error('Слишком много песен для одного архива.');
   const songIds = new Set<string>();
@@ -425,7 +430,7 @@ async function serializeTracks(mediaTracks: MediaTrack[], audioAssets: AudioAsse
 }
 
 async function serializeAudio(asset: AudioAsset, entries: Map<string, ExportEntry>): Promise<PackageAudioRef> {
-  if (!isSha256(asset.id) || asset.sha256 !== asset.id || asset.verified !== true) throw new Error(`Аудиофайл «${asset.name}» имеет некорректный идентификатор.`);
+  if (!isVerifiedAudioAsset(asset)) throw new Error(`Аудиофайл «${asset.name}» имеет некорректный идентификатор или повреждённые данные.`);
   const existing = entries.get(asset.sha256);
   if (existing) return { path: existing.path, name: asset.name, type: asset.type, size: asset.blob.size, sha256: asset.sha256 };
   const digests = await digestBlobWithCrc(asset.blob);
@@ -543,7 +548,6 @@ function remapGameReferences(
   };
 }
 
-function normalizeText(value: string) { return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU'); }
 
 function uniqueCopyTitle(title: string, games: GameConfig[]) {
   const used = new Set(games.map((game) => game.title));

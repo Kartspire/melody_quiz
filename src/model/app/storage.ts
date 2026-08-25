@@ -14,44 +14,82 @@ import {
   $songs,
 } from '../core/state';
 import { normalizeSession, reconcileSession } from '../session';
-import type { PersistedState } from '../types';
+import type { GameSession, PersistedState } from '../types';
 
 export const appStarted = createEvent();
+/** Retry initial IndexedDB hydration after a load/open failure. */
 export const storageRetryRequested = createEvent();
+/** Retry writing the latest in-memory snapshot after a save failure. */
+export const storageSaveRetryRequested = createEvent();
 export const persistedStateImported = createEvent<PersistedState>();
 
 const externalStorageChangeDetected = createEvent<number>();
 const storageErrorCleared = createEvent();
+const persistedStateChanged = createEvent<PersistedState>();
+const saveLatestRequested = createEvent();
+
 const loadFx = createEffect(loadState);
 const saveFx = createEffect(saveState);
+
+let saveTimer: number | undefined;
+let priorityFlushQueued = false;
+let lastSessionActivity = sessionActivitySnapshot($sessions.getState());
+
+export const persistedStateImportFx = createEffect(async (state: PersistedState) => {
+  cancelScheduledSave();
+  await saveState(state);
+  return state;
+});
 
 export const $storageError = createStore<string | null>(null)
   .on(loadFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось открыть локальное хранилище.'))
   .on(saveFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось сохранить изменения в локальное хранилище.'))
-  .on(externalStorageChangeDetected, () => 'Данные были изменены в другой вкладке. Эта вкладка переведена в режим только чтения, чтобы не затереть более новую версию. Перезагрузите страницу.')
+  .on(persistedStateImportFx.failData, (current, error) => error instanceof StorageConflictError
+    ? storageErrorMessage(error, 'Не удалось применить импортированные данные.')
+    : current)
+  .on(externalStorageChangeDetected, () => 'Данные были изменены в другой вкладке. Эта вкладка переведена в режим только чтения, чтобы не затереть более новую версию. Сохраните аварийную резервную копию при необходимости и перезагрузите страницу.')
   .on(loadFx.done, () => null)
   .on(storageErrorCleared, () => null);
 
 export const $storageReadOnly = createStore(false)
   .on(externalStorageChangeDetected, () => true)
   .on(saveFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly)
+  .on(persistedStateImportFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly)
   .on(loadFx.done, () => false);
-
-export const $storageSaveStatus = createStore<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  .on(saveFx, () => 'saving')
-  .on(saveFx.done, () => 'saved')
-  .on(saveFx.fail, () => 'error');
 
 export const $hydrated = createStore(false)
   .on(loadFx.done, () => true)
   .on(loadFx.fail, () => false);
 
-sample({
-  clock: saveFx.done,
-  source: $storageReadOnly,
-  filter: (readOnly) => !readOnly,
-  target: storageErrorCleared,
-});
+/**
+ * Newest application snapshot that has not yet been confirmed by IndexedDB.
+ * This stores references to the immutable model values; audio Blob data is not copied.
+ */
+export const $pendingPersistedState = createStore<PersistedState | null>(null)
+  .on(persistedStateChanged, (_, state) => state)
+  .on(saveFx.done, (pending, { params }) => pending === params ? null : pending)
+  .on(persistedStateImportFx.doneData, () => null);
+
+export const $storageDirty = $pendingPersistedState.map((state) => state !== null);
+
+const $saveOutcome = createStore<'idle' | 'saved' | 'error'>('idle')
+  .on(saveFx.done, () => 'saved')
+  .on(saveFx.fail, () => 'error')
+  .on(persistedStateImportFx.done, () => 'saved');
+
+const $storageSaving = combine(saveFx.pending, persistedStateImportFx.pending, (saving, importing) => saving || importing);
+
+export const $storageSaveStatus = combine(
+  { outcome: $saveOutcome, dirty: $storageDirty, saving: $storageSaving },
+  ({ outcome, dirty, saving }): 'idle' | 'dirty' | 'saving' | 'saved' | 'error' => {
+    if (saving) return 'saving';
+    if (outcome === 'error') return 'error';
+    if (dirty) return 'dirty';
+    return outcome;
+  },
+);
+
+sample({ clock: [appStarted, storageRetryRequested], target: loadFx });
 
 $games
   .on(loadFx.doneData, (_, state) => state.games)
@@ -77,8 +115,6 @@ $activeGameId
   .on(loadFx.doneData, (_, state) => state.activeGameId ?? state.games[0]?.id ?? null)
   .on(persistedStateImported, (_, state) => state.activeGameId ?? state.games[0]?.id ?? null);
 
-sample({ clock: [appStarted, storageRetryRequested], target: loadFx });
-
 export const $persistedState = combine(
   {
     games: $games,
@@ -102,41 +138,13 @@ export const $persistedState = combine(
   },
 );
 
-let saveTimer: number | undefined;
-let hasPendingSave = false;
-
-export const persistedStateImportFx = createEffect(async (state: PersistedState) => {
-  window.clearTimeout(saveTimer);
-  hasPendingSave = false;
-  await saveState(state);
-  return state;
-});
-
 sample({ clock: persistedStateImportFx.doneData, target: persistedStateImported });
 
-$storageError.on(
-  persistedStateImportFx.failData,
-  (_, error) => storageErrorMessage(error, 'Не удалось сохранить импортированные данные.'),
-);
-$storageReadOnly.on(
-  persistedStateImportFx.failData,
-  (readOnly, error) => error instanceof StorageConflictError ? true : readOnly,
-);
-
 sample({
-  clock: persistedStateImportFx.done,
+  clock: [saveFx.done, persistedStateImportFx.done],
   source: $storageReadOnly,
   filter: (readOnly) => !readOnly,
   target: storageErrorCleared,
-});
-
-const scheduleSaveFx = createEffect((state: PersistedState) => {
-  window.clearTimeout(saveTimer);
-  hasPendingSave = true;
-  saveTimer = window.setTimeout(() => {
-    hasPendingSave = false;
-    void saveFx(state);
-  }, 250);
 });
 
 sample({
@@ -144,29 +152,109 @@ sample({
   source: combine({ state: $persistedState, hydrated: $hydrated, readOnly: $storageReadOnly }),
   filter: ({ hydrated, readOnly }) => hydrated && !readOnly,
   fn: ({ state }) => state,
-  target: scheduleSaveFx,
+  target: persistedStateChanged,
 });
 
-if (typeof window !== 'undefined') {
-  subscribeToExternalStorageChanges((revision) => externalStorageChangeDetected(revision));
+const scheduleSaveFx = createEffect(() => {
+  cancelScheduledSave();
+  saveTimer = window.setTimeout(() => {
+    saveTimer = undefined;
+    saveLatestRequested();
+  }, 250);
+});
+
+sample({ clock: persistedStateChanged, target: scheduleSaveFx });
+
+sample({
+  clock: saveLatestRequested,
+  source: combine({ pending: $pendingPersistedState, readOnly: $storageReadOnly }),
+  filter: ({ pending, readOnly }) => Boolean(pending && !readOnly),
+  fn: ({ pending }) => pending!,
+  target: saveFx,
+});
+
+const requestSaveRetryFx = createEffect(() => {
+  cancelScheduledSave();
+  saveLatestRequested();
+});
+sample({ clock: storageSaveRetryRequested, target: requestSaveRetryFx });
+
+// Session changes get priority over ordinary editor/media updates. Queueing a microtask
+// guarantees that the combined persisted state already contains the new session value.
+const schedulePrioritySessionFlushFx = createEffect(() => {
+  if (priorityFlushQueued) return;
+  priorityFlushQueued = true;
+  queueMicrotask(() => {
+    priorityFlushQueued = false;
+    cancelScheduledSave();
+    saveLatestRequested();
+  });
+});
+
+const observeSessionActivityFx = createEffect((sessions: Record<string, GameSession>) => {
+  const nextActivity = sessionActivitySnapshot(sessions);
+  const changed = hasSessionActivityChanged(lastSessionActivity, nextActivity);
+  lastSessionActivity = nextActivity;
+  if (changed && $hydrated.getState() && !$storageReadOnly.getState()) schedulePrioritySessionFlushFx();
+});
+
+sample({ clock: $sessions.updates, target: observeSessionActivityFx });
+
+const unsubscribeExternalStorage = typeof window !== 'undefined'
+  ? subscribeToExternalStorageChanges((revision) => externalStorageChangeDetected(revision))
+  : null;
+
+
+function sessionActivitySnapshot(sessions: Record<string, GameSession>) {
+  return new Map(Object.values(sessions).map((session) => [session.gameId, session.updatedAt]));
+}
+
+function hasSessionActivityChanged(previous: Map<string, number>, next: Map<string, number>) {
+  if (previous.size !== next.size) return true;
+  for (const [gameId, updatedAt] of next) if (previous.get(gameId) !== updatedAt) return true;
+  return false;
+}
+
+function cancelScheduledSave() {
+  if (typeof window === 'undefined') return;
+  window.clearTimeout(saveTimer);
+  saveTimer = undefined;
 }
 
 function flushPendingSave() {
-  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState() || !hasPendingSave) return;
-  window.clearTimeout(saveTimer);
-  hasPendingSave = false;
-  void saveFx($persistedState.getState());
+  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState()) return;
+  cancelScheduledSave();
+  const pending = $pendingPersistedState.getState();
+  if (pending) void saveFx(pending);
 }
 
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushPendingSave();
-  });
+function handleVisibilityChange() {
+  if (document.visibilityState === 'hidden') flushPendingSave();
 }
 
+function handleBeforeUnload(event: BeforeUnloadEvent) {
+  if (!$storageDirty.getState() || $storageReadOnly.getState()) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', handleVisibilityChange);
 if (typeof window !== 'undefined') {
   window.addEventListener('pagehide', flushPendingSave);
+  window.addEventListener('beforeunload', handleBeforeUnload);
 }
+
+type HotModule = { dispose(callback: () => void): void };
+const hotModule = (import.meta as ImportMeta & { hot?: HotModule }).hot;
+hotModule?.dispose(() => {
+  cancelScheduledSave();
+  unsubscribeExternalStorage?.();
+  if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', handleVisibilityChange);
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('pagehide', flushPendingSave);
+    window.removeEventListener('beforeunload', handleBeforeUnload);
+  }
+});
 
 function hydrateSessions(state: PersistedState) {
   return Object.fromEntries(state.sessions.map((session) => {
@@ -177,5 +265,5 @@ function hydrateSessions(state: PersistedState) {
 
 function storageErrorMessage(error: unknown, fallback: string) {
   const detail = error instanceof Error && error.message ? ` ${error.message}` : '';
-  return `${fallback}${detail} Экспортируйте важные данные и проверьте свободное место/разрешения браузера.`;
+  return `${fallback}${detail} Несохранённые изменения остаются в памяти этой вкладки. Повторите сохранение или создайте полную резервную копию перед перезагрузкой.`;
 }

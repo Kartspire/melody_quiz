@@ -30,7 +30,9 @@ vi.mock('./separator', () => ({
     webGpu: false,
     crossOriginIsolated: false,
     maxSourceBytes: 100 * 1024 * 1024,
-    maxDurationSeconds: 8 * 60,
+    maxDurationSeconds: 90,
+    maxDecodeDurationSeconds: 8 * 60,
+    recommendedDurationSeconds: 60,
   }),
   releaseVocalSeparator: vi.fn(async () => undefined),
 }));
@@ -77,14 +79,18 @@ afterEach(async () => {
 });
 
 describe('VocalRemovalPage', () => {
-  it('allows full-track vocal removal before preview metadata is available', async () => {
+  it('waits for metadata before full-track vocal removal and enables a safe duration', async () => {
     await renderWithFile();
 
     const fullButton = findButton('Минус из всего трека');
     const fragmentButton = findButton('Минус из фрагмента');
 
-    expect(fullButton.disabled).toBe(false);
+    expect(fullButton.disabled).toBe(true);
     expect(fragmentButton.disabled).toBe(true);
+
+    await setOriginalDuration(90);
+    expect(fullButton.disabled).toBe(false);
+    expect(fragmentButton.disabled).toBe(false);
 
     await act(async () => {
       fullButton.click();
@@ -94,9 +100,18 @@ describe('VocalRemovalPage', () => {
     expect(createInstrumentalMock).toHaveBeenCalledTimes(1);
   });
 
+  it('disables full-track separation when the source exceeds the memory-safe limit', async () => {
+    await renderWithFile();
+    await setOriginalDuration(180);
+
+    expect(findButton('Минус из всего трека').disabled).toBe(true);
+    expect(container.textContent).toContain('Весь трек длиннее безопасного лимита');
+  });
+
 
   it('adds a generated minus directly to the media library', async () => {
     await renderWithFile();
+    await setOriginalDuration(90);
 
     await act(async () => {
       findButton('Минус из всего трека').click();
@@ -221,7 +236,7 @@ describe('VocalRemovalPage', () => {
 
   it('keeps a full-track minus when only the trim range changes', async () => {
     await renderWithFile();
-    await setOriginalDuration(180);
+    await setOriginalDuration(90);
 
     await act(async () => {
       findButton('Минус из всего трека').click();

@@ -34,12 +34,12 @@ export function ImportVerificationSummary({
           <ImportSummaryCard
             label="Песни"
             total={songsTotal}
-            details={buildDetails(stats.reusedSongs, stats.newSongs, stats.deduplicatedSongs, 'совпали внутри архива')}
+            details={buildDetails(stats.reusedSongs, stats.newSongs, stats.deduplicatedSongs, 'совпали по содержимому')}
           />
           <ImportSummaryCard
             label="Аудиотреки"
             total={tracksTotal}
-            details={buildDetails(stats.reusedTracks, stats.newTracks, stats.deduplicatedTracks, 'совпали внутри архива')}
+            details={buildDetails(stats.reusedTracks, stats.newTracks, stats.deduplicatedTracks, 'совпали по содержимому')}
           />
           <ImportSummaryCard
             label="Физические файлы"

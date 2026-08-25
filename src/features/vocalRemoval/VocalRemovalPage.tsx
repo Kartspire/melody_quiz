@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useObjectUrl } from '../../hooks/useObjectUrl';
 import { getErrorMessage } from '../../lib/errors';
 import { createTrimmedWav, MIN_CLIP_SECONDS, type TrimRange } from './audioClip';
+import { assertAudioProcessingFile, formatProcessingLimit } from './audioProcessingLimits';
 import { clampNumber, formatAudioTime } from './audioTime';
 import { InlineAudioPlayer } from './InlineAudioPlayer';
 import {
@@ -27,6 +28,7 @@ type LibraryNotice = { id: number; message: string };
 export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const separationAbortRef = useRef<AbortController | null>(null);
+  const clipAbortRef = useRef<AbortController | null>(null);
   const libraryNoticeTimerRef = useRef<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [sourceDuration, setSourceDuration] = useState(0);
@@ -51,15 +53,26 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const working = busy || clipBusy || libraryBusy !== null;
   const trimRange = useMemo<TrimRange>(() => ({ start: trimStart, end: trimEnd }), [trimEnd, trimStart]);
   const selectedDuration = Math.max(0, trimEnd - trimStart);
+  const sourceTooLongToDecode = sourceDuration > capabilities.maxDecodeDurationSeconds;
+  const fullTrackTooLong = sourceDuration > capabilities.maxDurationSeconds;
+  const fragmentTooLong = selectedDuration > capabilities.maxDurationSeconds;
+  const canCreateFragment = sourceDuration > 0 && !sourceTooLongToDecode && selectedDuration >= MIN_CLIP_SECONDS;
+  const canProcessFragment = canCreateFragment && !fragmentTooLong;
+  const canProcessFullTrack = sourceDuration > 0 && !sourceTooLongToDecode && !fullTrackTooLong;
 
   useEffect(() => () => {
     separationAbortRef.current?.abort();
+    clipAbortRef.current?.abort();
     if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
     void releaseVocalSeparator();
   }, []);
 
   useEffect(() => {
-    if (!active) setDragging(false);
+    if (active) return;
+    setDragging(false);
+    separationAbortRef.current?.abort();
+    clipAbortRef.current?.abort();
+    void releaseVocalSeparator();
   }, [active]);
 
   const showLibraryNotice = (message: string) => {
@@ -84,6 +97,13 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
 
   const selectFile = (nextFile?: File | null) => {
     if (!nextFile || working) return;
+    try {
+      assertAudioProcessingFile(nextFile);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Не удалось открыть аудиофайл.');
+      if (inputRef.current) inputRef.current.value = '';
+      return;
+    }
     setFile(nextFile);
     setSourceDuration(0);
     setTrimStart(0);
@@ -108,24 +128,30 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   };
 
   const createClip = async () => {
-    if (!file || working || selectedDuration < MIN_CLIP_SECONDS) return;
+    if (!file || working || !canCreateFragment) return;
+    const controller = new AbortController();
+    clipAbortRef.current = controller;
     setClipBusy(true);
     setTrimResult(null);
     setLibraryResults((current) => ({ ...current, trim: undefined }));
     setLibraryError(null);
     setError(null);
     try {
-      setTrimResult(await createTrimmedWav(file, trimRange));
+      setTrimResult(await createTrimmedWav(file, trimRange, controller.signal));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Не удалось обрезать трек.');
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
+        setError(caught instanceof Error ? caught.message : 'Не удалось обрезать трек.');
+      }
     } finally {
+      if (clipAbortRef.current === controller) clipAbortRef.current = null;
       setClipBusy(false);
     }
   };
 
   const processFile = async (scope: MinusScope) => {
     if (!file || working) return;
-    if (scope === 'fragment' && selectedDuration < MIN_CLIP_SECONDS) return;
+    if (scope === 'fragment' && !canProcessFragment) return;
+    if (scope === 'full' && !canProcessFullTrack) return;
     const controller = new AbortController();
     separationAbortRef.current = controller;
     setBusy(true);
@@ -139,7 +165,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
       let source = file;
       if (scope === 'fragment') {
         setProgress({ phase: 'decode', progress: null, message: 'Готовим выбранный фрагмент…' });
-        const fragment = await createTrimmedWav(file, trimRange);
+        const fragment = await createTrimmedWav(file, trimRange, controller.signal);
         controller.signal.throwIfAborted();
         source = new File([fragment], buildClipOutputName(file.name), { type: 'audio/wav' });
       }
@@ -155,6 +181,10 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
       if (separationAbortRef.current === controller) separationAbortRef.current = null;
       setBusy(false);
     }
+  };
+
+  const cancelSeparation = () => {
+    separationAbortRef.current?.abort();
   };
 
   const addResultToLibrary = async (kind: GeneratedResultKind, blob: Blob, outputName: string) => {
@@ -313,7 +343,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
             source={sourceUrl}
             duration={sourceDuration}
             range={trimRange}
-            disabled={working || !active}
+            disabled={working || !active || sourceTooLongToDecode}
             busy={clipBusy}
             onChange={updateTrimRange}
             onCreateClip={() => void createClip()}
@@ -344,7 +374,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
             <div className="minus-action-options">
               <button
                 className="primary-button primary-button--large"
-                disabled={working || sourceDuration <= 0 || selectedDuration < MIN_CLIP_SECONDS}
+                disabled={working || !canProcessFragment}
                 onClick={() => void processFile('fragment')}
               >
                 {busy && minusScope === 'fragment'
@@ -353,15 +383,24 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
                     ? `Минус из фрагмента · ${formatAudioTime(selectedDuration)}`
                     : 'Минус из фрагмента · ждём длительность'}
               </button>
-              <button className="secondary-button" disabled={working} onClick={() => void processFile('full')}>
+              <button className="secondary-button" disabled={working || !canProcessFullTrack} onClick={() => void processFile('full')}>
                 {busy && minusScope === 'full'
                   ? 'Делаем минус…'
                   : sourceDuration > 0
                     ? `Минус из всего трека · ${formatAudioTime(sourceDuration)}`
-                    : 'Минус из всего трека'}
+                    : 'Минус из всего трека · ждём длительность'}
               </button>
             </div>
-            <small>Ограничение разделения вокала: до {Math.round(capabilities.maxSourceBytes / 1024 / 1024)} МБ и {Math.round(capabilities.maxDurationSeconds / 60)} минут на обрабатываемый источник.</small>
+            <small>Для безопасной работы HTDemucs обрабатывает не более {formatProcessingLimit(capabilities.maxDurationSeconds)} за один запуск. Исходник для локальной нарезки — до {formatProcessingLimit(capabilities.maxDecodeDurationSeconds)} и {Math.round(capabilities.maxSourceBytes / 1024 / 1024)} МБ.</small>
+            {sourceDuration > 0 && fullTrackTooLong && !sourceTooLongToDecode && (
+              <small className="vocal-processing-warning">Весь трек длиннее безопасного лимита для HTDemucs. Выберите участок до {formatProcessingLimit(capabilities.maxDurationSeconds)} и запустите минус из фрагмента.</small>
+            )}
+            {fragmentTooLong && !sourceTooLongToDecode && (
+              <small className="vocal-processing-warning">Текущий фрагмент слишком длинный для удаления вокала. Сократите его до {formatProcessingLimit(capabilities.maxDurationSeconds)}.</small>
+            )}
+            {sourceTooLongToDecode && (
+              <small className="vocal-processing-warning vocal-processing-warning--danger">Исходник длиннее {formatProcessingLimit(capabilities.maxDecodeDurationSeconds)}. В текущем browser-only режиме его безопасная нарезка отключена, чтобы не переполнить память вкладки.</small>
+            )}
           </section>
         )}
 
@@ -377,7 +416,10 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
             <div className="vocal-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.progress === null ? undefined : Math.round(progress.progress * 100)}>
               <span className={progress.progress === null ? 'vocal-progress-track__indeterminate' : ''} style={progress.progress === null ? undefined : { width: `${progress.progress * 100}%` }} />
             </div>
-            <p>{phaseHint(progress.phase)}</p>
+            <div className="vocal-progress-card__footer">
+              <p>{phaseHint(progress.phase)}</p>
+              <button className="secondary-button" onClick={cancelSeparation}>Отменить обработку</button>
+            </div>
           </section>
         )}
 

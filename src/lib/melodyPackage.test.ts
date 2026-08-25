@@ -141,6 +141,40 @@ describe('melody package', () => {
     expect(copied.audioAssets).toHaveLength(2);
   });
 
+
+  it('deduplicates imported logical entities against equivalent existing library entries with different ids', async () => {
+    const { song, minusTrack, plusTrack, minus, plus } = await makeFixture();
+    const parsed = await parseMelodyPackage((await exportLibraryPackage([song], [minusTrack, plusTrack], [minus, plus])).blob);
+    const now = Date.now();
+    const existingMinus: MediaTrack = { ...minusTrack, id: 'local-minus', name: `  ${minusTrack.name.toUpperCase()}  `, createdAt: now, updatedAt: now };
+    const existingPlus: MediaTrack = { ...plusTrack, id: 'local-plus', createdAt: now, updatedAt: now };
+    const existingSong: Song = {
+      ...song,
+      id: 'local-song',
+      artist: ' кино ',
+      title: 'ГРУППА   КРОВИ',
+      minusTrackId: existingMinus.id,
+      plusTrackId: existingPlus.id,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const prepared = await prepareMediaMerge(parsed, [existingSong], [existingMinus, existingPlus], [minus, plus]);
+
+    expect(prepared.songs).toHaveLength(1);
+    expect(prepared.mediaTracks).toHaveLength(2);
+    expect(prepared.audioAssets).toHaveLength(2);
+    expect(prepared.trackIdMap.get(minusTrack.id)).toBe(existingMinus.id);
+    expect(prepared.trackIdMap.get(plusTrack.id)).toBe(existingPlus.id);
+    expect(prepared.songIdMap.get(song.id)).toBe(existingSong.id);
+    expect(prepared.stats).toEqual({
+      ...emptyStats,
+      deduplicatedSongs: 1,
+      deduplicatedTracks: 2,
+      reusedAudio: 2,
+    });
+  });
+
   it('preserves standalone media tracks in a library export', async () => {
     const { song, minusTrack, plusTrack, minus, plus } = await makeFixture();
     const standaloneAudio = await makeAudio('jingle.mp3', 17);

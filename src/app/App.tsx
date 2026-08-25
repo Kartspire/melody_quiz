@@ -1,9 +1,10 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeGame,
   $games,
   $hydrated,
+  $persistedState,
   $screen,
   $storageError,
   $storageReadOnly,
@@ -13,6 +14,7 @@ import {
   hasSessionProgress,
   screenChanged,
   storageRetryRequested,
+  storageSaveRetryRequested,
 } from '../model/game';
 import type { Screen } from '../model/types';
 import { AdminPanel } from '../components/AdminPanel';
@@ -23,9 +25,11 @@ import { VocalRemovalPage } from '../features/vocalRemoval/VocalRemovalPage';
 import { Scoreboard } from '../components/Scoreboard';
 import { SettingsPage } from '../components/SettingsPage';
 import { GameLaunchDialog } from '../components/GameLaunchDialog';
+import { exportAppBackup } from '../lib/appBackup';
+import { downloadBlob } from '../lib/download';
 
 export function App() {
-  const [screen, hydrated, activeGame, games, sessions, storageError, storageReadOnly, storageSaveStatus] = useUnit([
+  const [screen, hydrated, activeGame, games, sessions, storageError, storageReadOnly, storageSaveStatus, persistedState] = useUnit([
     $screen,
     $hydrated,
     $activeGame,
@@ -34,7 +38,27 @@ export function App() {
     $storageError,
     $storageReadOnly,
     $storageSaveStatus,
+    $persistedState,
   ]);
+  const [emergencyBackupBusy, setEmergencyBackupBusy] = useState(false);
+  const [emergencyBackupError, setEmergencyBackupError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!storageError) setEmergencyBackupError(null);
+  }, [storageError]);
+
+  const saveEmergencyBackup = async () => {
+    setEmergencyBackupBusy(true);
+    setEmergencyBackupError(null);
+    try {
+      const result = await exportAppBackup(persistedState);
+      downloadBlob(result.blob, result.filename);
+    } catch (error) {
+      setEmergencyBackupError(error instanceof Error ? error.message : 'Не удалось создать резервную копию.');
+    } finally {
+      setEmergencyBackupBusy(false);
+    }
+  };
 
   const savedSessionGames = useMemo(
     () => games.filter((game) => hasSessionProgress(sessions[game.id])).sort((a, b) => (sessions[b.id]?.updatedAt ?? b.updatedAt) - (sessions[a.id]?.updatedAt ?? a.updatedAt)),
@@ -63,16 +87,32 @@ export function App() {
       <div className="app-loader storage-recovery">
         <strong>Данные изменились в другой вкладке</strong>
         <span>{storageError || 'Эта вкладка остановлена, чтобы не перезаписать более новую версию локальной базы.'}</span>
-        <button className="primary-button" onClick={() => window.location.reload()}>Загрузить актуальные данные</button>
+        <div className="storage-recovery__actions">
+          <button className="secondary-button" disabled={emergencyBackupBusy} onClick={() => void saveEmergencyBackup()}>
+            {emergencyBackupBusy ? 'Создаём копию…' : 'Сохранить аварийную копию'}
+          </button>
+          <button className="primary-button" onClick={() => window.location.reload()}>Загрузить актуальные данные</button>
+        </div>
+        {emergencyBackupError && <small className="storage-recovery__error">{emergencyBackupError}</small>}
         <small>Несохранённые изменения этой вкладки намеренно не записываются поверх более новой версии.</small>
       </div>
     );
   }
 
+  const storageBanner = storageError ? (
+    <StorageErrorBanner
+      message={storageError}
+      saveStatus={storageSaveStatus}
+      backupBusy={emergencyBackupBusy}
+      backupError={emergencyBackupError}
+      onBackup={saveEmergencyBackup}
+    />
+  ) : null;
+
   if (screen === 'game' && activeGame) {
     return (
       <div className="game-mode">
-        {storageError && <StorageErrorBanner message={storageError} />}
+        {storageBanner}
         <header className="game-mode__header">
           <button className="game-mode__exit" onClick={() => screenChanged('library')}>← Выйти к играм</button>
           <Scoreboard />
@@ -89,7 +129,7 @@ export function App() {
 
   return (
     <div className="app app-layout">
-      {storageError && <StorageErrorBanner message={storageError} />}
+      {storageBanner}
       <aside className="app-sidebar">
         <button className="sidebar-brand" onClick={() => screenChanged('library')}>
           <span className="brand-mark">♪</span>
@@ -104,7 +144,17 @@ export function App() {
         </nav>
 
         <div className="sidebar-spacer" />
-        <small className="storage-save-status">{storageSaveStatus === 'saving' ? 'Сохраняем…' : storageSaveStatus === 'error' ? 'Ошибка сохранения' : storageSaveStatus === 'saved' ? 'Изменения сохранены' : ''}</small>
+        <small className="storage-save-status">
+          {storageSaveStatus === 'saving'
+            ? 'Сохраняем…'
+            : storageSaveStatus === 'error'
+              ? 'Ошибка сохранения'
+              : storageSaveStatus === 'dirty'
+                ? 'Есть несохранённые изменения'
+                : storageSaveStatus === 'saved'
+                  ? 'Изменения сохранены'
+                  : ''}
+        </small>
 
         {screen !== 'library' && sidebarGame && sidebarSession && (
           <section className="active-session-card">
@@ -148,14 +198,34 @@ function SidebarButton({ screen, target, icon, label }: { screen: Screen; target
   );
 }
 
-function StorageErrorBanner({ message }: { message: string }) {
+function StorageErrorBanner({
+  message,
+  saveStatus,
+  backupBusy,
+  backupError,
+  onBackup,
+}: {
+  message: string;
+  saveStatus: 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+  backupBusy: boolean;
+  backupError: string | null;
+  onBackup: () => Promise<void>;
+}) {
   return (
     <div className="storage-error-banner" role="alert">
       <div className="storage-error-banner__text">
         <strong>Данные сейчас не защищены</strong>
         <span>{message}</span>
+        {backupError && <span>{backupError}</span>}
       </div>
-      <button className="secondary-button" onClick={() => window.location.reload()}>Перезагрузить</button>
+      <div className="storage-error-banner__actions">
+        <button className="secondary-button" disabled={saveStatus === 'saving'} onClick={() => storageSaveRetryRequested()}>
+          {saveStatus === 'saving' ? 'Сохраняем…' : 'Повторить сохранение'}
+        </button>
+        <button className="secondary-button" disabled={backupBusy} onClick={() => void onBackup()}>
+          {backupBusy ? 'Создаём копию…' : 'Резервная копия'}
+        </button>
+      </div>
     </div>
   );
 }

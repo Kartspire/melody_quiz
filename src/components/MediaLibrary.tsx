@@ -32,7 +32,7 @@ import { AUDIO_FILE_ACCEPT } from '../lib/audio';
 import { getErrorMessage } from '../lib/errors';
 import { formatBytes } from '../lib/format';
 import { normalizeSearchText } from '../lib/search';
-import { buildMediaTrackUsageMap, buildSongUsageMap, type MediaTrackUsage, type SongUsage } from '../model/media/selectors';
+import { buildMediaTrackUsageMap, buildSongUsageMap, type MediaTrackUsage, type SongUsage } from '../model/media';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import { ActionMenu } from './ActionMenu';
 import { SongForm } from './SongForm';

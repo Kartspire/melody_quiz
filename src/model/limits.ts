@@ -29,6 +29,7 @@ export const DATA_LIMITS = {
   gameJsonBytes: 10 * 1024 * 1024,
   songsJsonBytes: 20 * 1024 * 1024,
   tracksJsonBytes: 20 * 1024 * 1024,
+  backupStateJsonBytes: 64 * 1024 * 1024,
   packageFiles: 10_000,
   packageSongs: 5_000,
   packageTracks: 10_000,

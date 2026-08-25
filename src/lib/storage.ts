@@ -314,7 +314,14 @@ async function canonicalizeLoadedState(raw: {
     const oldId = typeof rawAsset.id === 'string' ? rawAsset.id : '';
     const canonical = await canonicalizeAudioAsset(rawAsset);
     if (oldId) oldToNewAudioId.set(oldId, canonical.id);
-    if (oldId !== canonical.id || rawAsset.sha256 !== canonical.sha256 || rawAsset.verified !== true || 'size' in rawAsset) changed = true;
+    if (
+      oldId !== canonical.id
+      || rawAsset.sha256 !== canonical.sha256
+      || rawAsset.name !== canonical.name
+      || rawAsset.type !== canonical.type
+      || rawAsset.verified !== true
+      || 'size' in rawAsset
+    ) changed = true;
     if (!canonicalByHash.has(canonical.id)) {
       canonicalByHash.set(canonical.id, canonical);
       audioAssets.push(canonical);

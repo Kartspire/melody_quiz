@@ -10,6 +10,27 @@ describe('audio validation', () => {
   });
 
   it('accepts a known MP3 signature before browser metadata validation', async () => {
-    await expect(validateAudioBlob(validMp3(), 'track.mp3', 'audio/mpeg', false)).resolves.toBeUndefined();
+    await expect(validateAudioBlob(validMp3(), 'track.mp3', 'audio/mpeg', false)).resolves.toMatchObject({
+      format: 'mp3',
+      mimeType: 'audio/mpeg',
+    });
+  });
+
+  it('rejects a misleading extension or MIME that conflicts with the physical container', async () => {
+    await expect(validateAudioBlob(validMp3(), 'track.wav', 'audio/wav', true)).rejects.toThrow(/не соответствует/i);
+  });
+
+  it('can normalize stale stored metadata from the physical container', async () => {
+    await expect(validateAudioBlob(validMp3(), 'old-track.wav', 'audio/wav', false)).resolves.toMatchObject({
+      format: 'mp3',
+      mimeType: 'audio/mpeg',
+    });
+  });
+
+  it('accepts a known container even when the original metadata is missing', async () => {
+    await expect(validateAudioBlob(validMp3(), 'track', '', false)).resolves.toMatchObject({
+      format: 'mp3',
+      mimeType: 'audio/mpeg',
+    });
   });
 });

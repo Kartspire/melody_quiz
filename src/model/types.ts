@@ -4,6 +4,7 @@ export type AudioAsset = {
   readonly type: string;
   readonly blob: Blob;
   readonly sha256: string;
+  /** Persisted integrity marker. Browser decodability is checked separately when audio enters the library. */
   readonly verified: true;
 };
 

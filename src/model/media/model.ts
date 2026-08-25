@@ -2,7 +2,9 @@ import { combine, createEvent, sample } from 'effector';
 import { cloneSong } from '../defaults';
 import { DATA_LIMITS } from '../limits';
 import { isMediaTrackUsed } from './selectors';
-import { isSha256, isValidTimestamp } from '../validation';
+import { assertValidMediaTrack, isValidTimestamp } from '../validation';
+import { isVerifiedAudioAsset } from './domain/audioAsset';
+import { removableAudioIdAfterTrackRemoval } from './domain/libraryIdentity';
 import { $audioAssets, $games, $mediaTracks, $songs } from '../core/state';
 import type { AudioAsset, MediaTrack, Song } from '../types';
 
@@ -140,9 +142,9 @@ sample({
   clock: mediaTrackAdded,
   source: $mediaTracks,
   filter: (tracks, { track, audioAsset }) => !tracks.some((item) => item.id === track.id)
-    && isValidMediaTrack(track)
+    && isValidMediaTrackValue(track)
     && track.audioId === audioAsset.id
-    && isValidAudioAsset(audioAsset),
+    && isVerifiedAudioAsset(audioAsset),
   fn: (_, payload) => payload,
   target: mediaTrackAdditionApplied,
 });
@@ -151,7 +153,7 @@ sample({
   clock: mediaTrackAudioChanged,
   source: $mediaTracks,
   filter: (tracks, { trackId, audioAsset }) => tracks.some((track) => track.id === trackId)
-    && isValidAudioAsset(audioAsset),
+    && isVerifiedAudioAsset(audioAsset),
   fn: (tracks, { trackId, audioAsset }) => {
     const current = tracks.find((track) => track.id === trackId)!;
     const removableAudioId = current.audioId !== audioAsset.id
@@ -172,9 +174,9 @@ sample({
     if (payload.track) {
       return !mediaTracks.some((track) => track.id === payload.track!.id)
         && payload.track.id === (payload.trackId ?? payload.track.id)
-        && isValidMediaTrack(payload.track)
+        && isValidMediaTrackValue(payload.track)
         && payload.audioAsset?.id === payload.track.audioId
-        && isValidAudioAsset(payload.audioAsset);
+        && isVerifiedAudioAsset(payload.audioAsset);
     }
     return mediaTracks.some((track) => track.id === payload.trackId);
   },
@@ -187,13 +189,10 @@ sample({
   source: combine({ songs: $songs, mediaTracks: $mediaTracks, games: $games }),
   filter: ({ songs, mediaTracks, games }, trackId) => mediaTracks.some((track) => track.id === trackId)
     && !isMediaTrackUsed(games, songs, trackId),
-  fn: ({ mediaTracks }, trackId) => {
-    const track = mediaTracks.find((item) => item.id === trackId)!;
-    const removableAudioId = mediaTracks.some((other) => other.id !== trackId && other.audioId === track.audioId)
-      ? undefined
-      : track.audioId;
-    return { trackId, removableAudioId };
-  },
+  fn: ({ mediaTracks }, trackId) => ({
+    trackId,
+    removableAudioId: removableAudioIdAfterTrackRemoval(mediaTracks, trackId),
+  }),
   target: mediaTrackDeletionApplied,
 });
 
@@ -223,12 +222,12 @@ function isValidSongAddition(
     || !isValidTimestamp(song.updatedAt)
   ) return false;
 
-  if (audioAssets.some((asset) => !isValidAudioAsset(asset))) return false;
+  if (audioAssets.some((asset) => !isVerifiedAudioAsset(asset))) return false;
   const availableAudioIds = new Set([...currentAssets, ...audioAssets].map((asset) => asset.id));
   const currentTrackIds = new Set(currentTracks.map((track) => track.id));
   const additionTrackIds = new Set<string>();
   for (const track of mediaTracks) {
-    if (!isValidMediaTrack(track) || currentTrackIds.has(track.id) || additionTrackIds.has(track.id) || !availableAudioIds.has(track.audioId)) return false;
+    if (!isValidMediaTrackValue(track) || currentTrackIds.has(track.id) || additionTrackIds.has(track.id) || !availableAudioIds.has(track.audioId)) return false;
     additionTrackIds.add(track.id);
   }
 
@@ -236,22 +235,13 @@ function isValidSongAddition(
   return [song.minusTrackId, song.plusTrackId].every((trackId) => !trackId || availableTrackIds.has(trackId));
 }
 
-function isValidMediaTrack(track: MediaTrack) {
-  return Boolean(track.id)
-    && track.id.length <= DATA_LIMITS.text.id
-    && track.name.trim().length > 0
-    && track.name.length <= DATA_LIMITS.text.mediaTrackName
-    && isSha256(track.audioId)
-    && isValidTimestamp(track.createdAt)
-    && isValidTimestamp(track.updatedAt);
-}
-
-function isValidAudioAsset(audioAsset: AudioAsset) {
-  return audioAsset.id === audioAsset.sha256
-    && isSha256(audioAsset.id)
-    && audioAsset.verified === true
-    && audioAsset.blob instanceof Blob
-    && audioAsset.blob.size > 0;
+function isValidMediaTrackValue(track: MediaTrack) {
+  try {
+    assertValidMediaTrack(track);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function mergeAudioAssets(current: AudioAsset[], additions: AudioAsset[]) {

@@ -1,3 +1,5 @@
+import { assertAudioProcessingFile, assertDecodableDuration } from './audioProcessingLimits';
+import { readAudioDuration } from './audioMetadata';
 import { encodeStereoWav } from './wav';
 
 export const MIN_CLIP_SECONDS = 0.1;
@@ -7,15 +9,34 @@ export type TrimRange = {
   end: number;
 };
 
-export async function createTrimmedWav(file: File, range: TrimRange): Promise<Blob> {
-  if (!(file instanceof File) || file.size <= 0) {
-    throw new Error('Выберите непустой аудиофайл.');
-  }
+export async function createTrimmedWav(
+  file: File,
+  range: TrimRange,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  assertAudioProcessingFile(file);
+  signal?.throwIfAborted();
 
   let audioContext: AudioContext | null = null;
+  let abortHandler: (() => void) | null = null;
   try {
+    const metadataDuration = await readAudioDuration(file, signal);
+    assertDecodableDuration(metadataDuration);
+    signal?.throwIfAborted();
+
     audioContext = new AudioContext();
-    const decoded = await audioContext.decodeAudioData(await file.arrayBuffer());
+    const context = audioContext;
+    abortHandler = () => {
+      void context.close().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', abortHandler, { once: true });
+
+    const sourceBytes = await file.arrayBuffer();
+    signal?.throwIfAborted();
+    const decoded = await context.decodeAudioData(sourceBytes);
+    signal?.throwIfAborted();
+    assertDecodableDuration(decoded.duration);
+
     const { startSample, endSample } = resolveTrimSampleRange(
       decoded.duration,
       decoded.sampleRate,
@@ -28,15 +49,22 @@ export async function createTrimmedWav(file: File, range: TrimRange): Promise<Bl
       ? decoded.getChannelData(1)
       : leftSource;
 
+    signal?.throwIfAborted();
     const left = leftSource.slice(startSample, endSample);
     const right = rightSource.slice(startSample, endSample);
+    signal?.throwIfAborted();
     return encodeStereoWav(left, right, decoded.sampleRate);
   } catch (error) {
-    if (error instanceof Error && /слишком короткий|границ/i.test(error.message)) throw error;
+    if (signal?.aborted) throw new DOMException('Операция отменена.', 'AbortError');
+    if (error instanceof DOMException && error.name === 'AbortError') throw error;
+    if (error instanceof Error && /слишком короткий|границ|слишком длинный|Максимальн/i.test(error.message)) throw error;
     const message = error instanceof Error ? error.message : '';
     throw new Error(message ? `Не удалось обрезать аудио: ${message}` : 'Не удалось обрезать аудио.');
   } finally {
-    if (audioContext) void audioContext.close().catch(() => undefined);
+    if (abortHandler) signal?.removeEventListener('abort', abortHandler);
+    if (audioContext && audioContext.state !== 'closed') {
+      await audioContext.close().catch(() => undefined);
+    }
   }
 }
 

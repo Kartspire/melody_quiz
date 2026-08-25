@@ -1802,3 +1802,57 @@ p { color: var(--muted); line-height: 1.6; }
 @media (max-width: 700px) {
   .vocal-media-toast { right: 16px; bottom: 16px; left: 16px; max-width: none; }
 }
+
+.vocal-processing-warning {
+  display: block;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(244,196,78,.22);
+  border-radius: 10px;
+  background: rgba(244,196,78,.055);
+  color: #f4d98f;
+  line-height: 1.45;
+}
+.vocal-processing-warning--danger {
+  border-color: rgba(251,113,133,.24);
+  background: rgba(127,29,29,.08);
+  color: #fecdd3;
+}
+.vocal-progress-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 11px;
+}
+.vocal-progress-card__footer p { margin: 0; }
+.vocal-progress-card__footer button { flex: none; }
+
+@media (max-width: 640px) {
+  .vocal-progress-card__footer { align-items: stretch; flex-direction: column; }
+  .vocal-progress-card__footer button { width: 100%; }
+}
+
+/* stage 2 — persistence safety and full backups */
+.settings-backup-buttons { display: flex !important; flex-wrap: wrap; justify-content: flex-end; gap: 8px !important; }
+.settings-backup-message { margin-top: 14px; padding: 11px 13px; border-radius: 11px; font-size: 12px; line-height: 1.45; }
+.settings-backup-message--success { border: 1px solid rgba(52, 211, 153, .24); background: rgba(52, 211, 153, .06); color: #a7f3d0; }
+.settings-backup-message--error { border: 1px solid rgba(251, 113, 133, .3); background: rgba(244, 63, 94, .07); color: #fecdd3; }
+.backup-restore-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 4px 0 14px; }
+.backup-restore-summary > div { display: grid; gap: 2px; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.025); text-align: center; }
+.backup-restore-summary strong { font-size: 19px; color: var(--accent-2); }
+.backup-restore-summary span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.backup-restore-date { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+.storage-error-banner__actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.storage-recovery__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.storage-recovery__error { color: #fecdd3 !important; }
+
+@media (max-width: 760px) {
+  .settings-backup-buttons { justify-content: flex-start; }
+  .settings-backup-buttons .secondary-button { width: 100%; }
+  .backup-restore-summary { grid-template-columns: 1fr 1fr; }
+  .storage-error-banner__actions { width: 100%; }
+  .storage-error-banner__actions .secondary-button { flex: 1 1 180px; }
+  .storage-recovery__actions { width: 100%; }
+  .storage-recovery__actions > button { flex: 1 1 220px; }
+}
