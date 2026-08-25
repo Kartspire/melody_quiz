@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useObjectUrl } from '../../hooks/useObjectUrl';
+import { getErrorMessage } from '../../lib/errors';
 import { createTrimmedWav, MIN_CLIP_SECONDS, type TrimRange } from './audioClip';
 import { clampNumber, formatAudioTime } from './audioTime';
 import { InlineAudioPlayer } from './InlineAudioPlayer';
@@ -10,6 +11,7 @@ import {
   type VocalRemovalProgress,
 } from './separator';
 import { TrackTrimEditor } from './TrackTrimEditor';
+import { addGeneratedTrackToLibrary, type AddGeneratedTrackResult } from './addGeneratedTrackToLibrary';
 
 const INITIAL_PROGRESS: VocalRemovalProgress = {
   phase: 'runtime',
@@ -18,9 +20,14 @@ const INITIAL_PROGRESS: VocalRemovalProgress = {
 };
 
 type MinusScope = 'full' | 'fragment';
+type GeneratedResultKind = 'source' | 'trim' | 'minus';
+type LibraryResult = Pick<AddGeneratedTrackResult, 'status'> & { trackId: string };
+type LibraryNotice = { id: number; message: string };
 
-export function VocalRemovalPage() {
+export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const separationAbortRef = useRef<AbortController | null>(null);
+  const libraryNoticeTimerRef = useRef<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [sourceDuration, setSourceDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
@@ -33,21 +40,45 @@ export function VocalRemovalPage() {
   const [clipBusy, setClipBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [libraryBusy, setLibraryBusy] = useState<GeneratedResultKind | null>(null);
+  const [libraryError, setLibraryError] = useState<{ kind: GeneratedResultKind; message: string } | null>(null);
+  const [libraryResults, setLibraryResults] = useState<Partial<Record<GeneratedResultKind, LibraryResult>>>({});
+  const [libraryNotice, setLibraryNotice] = useState<LibraryNotice | null>(null);
   const capabilities = useMemo(() => getVocalRemovalCapabilities(), []);
   const sourceUrl = useObjectUrl(file ?? undefined);
   const trimResultUrl = useObjectUrl(trimResult ?? undefined);
   const minusResultUrl = useObjectUrl(minusResult ?? undefined);
-  const working = busy || clipBusy;
+  const working = busy || clipBusy || libraryBusy !== null;
   const trimRange = useMemo<TrimRange>(() => ({ start: trimStart, end: trimEnd }), [trimEnd, trimStart]);
   const selectedDuration = Math.max(0, trimEnd - trimStart);
 
   useEffect(() => () => {
+    separationAbortRef.current?.abort();
+    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
     void releaseVocalSeparator();
   }, []);
 
-  const clearGeneratedResults = () => {
+  useEffect(() => {
+    if (!active) setDragging(false);
+  }, [active]);
+
+  const showLibraryNotice = (message: string) => {
+    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
+    setLibraryNotice({ id: Date.now(), message });
+    libraryNoticeTimerRef.current = window.setTimeout(() => {
+      setLibraryNotice(null);
+      libraryNoticeTimerRef.current = null;
+    }, 3200);
+  };
+
+  const clearTrimDependentResults = () => {
     setTrimResult(null);
-    setMinusResult(null);
+    setLibraryResults((current) => ({ ...current, trim: undefined }));
+    if (minusScope === 'fragment') {
+      setMinusResult(null);
+      setLibraryResults((current) => ({ ...current, minus: undefined }));
+    }
+    setLibraryError(null);
     setError(null);
   };
 
@@ -60,6 +91,9 @@ export function VocalRemovalPage() {
     setTrimResult(null);
     setMinusResult(null);
     setMinusScope('full');
+    setLibraryResults({});
+    setLibraryError(null);
+    setLibraryNotice(null);
     setError(null);
     setProgress(INITIAL_PROGRESS);
   };
@@ -70,13 +104,15 @@ export function VocalRemovalPage() {
     const end = clampNumber(next.end, start + MIN_CLIP_SECONDS, sourceDuration);
     setTrimStart(start);
     setTrimEnd(end);
-    clearGeneratedResults();
+    clearTrimDependentResults();
   };
 
   const createClip = async () => {
     if (!file || working || selectedDuration < MIN_CLIP_SECONDS) return;
     setClipBusy(true);
     setTrimResult(null);
+    setLibraryResults((current) => ({ ...current, trim: undefined }));
+    setLibraryError(null);
     setError(null);
     try {
       setTrimResult(await createTrimmedWav(file, trimRange));
@@ -90,8 +126,12 @@ export function VocalRemovalPage() {
   const processFile = async (scope: MinusScope) => {
     if (!file || working) return;
     if (scope === 'fragment' && selectedDuration < MIN_CLIP_SECONDS) return;
+    const controller = new AbortController();
+    separationAbortRef.current = controller;
     setBusy(true);
     setMinusResult(null);
+    setLibraryResults((current) => ({ ...current, minus: undefined }));
+    setLibraryError(null);
     setMinusScope(scope);
     setError(null);
 
@@ -100,15 +140,41 @@ export function VocalRemovalPage() {
       if (scope === 'fragment') {
         setProgress({ phase: 'decode', progress: null, message: 'Готовим выбранный фрагмент…' });
         const fragment = await createTrimmedWav(file, trimRange);
+        controller.signal.throwIfAborted();
         source = new File([fragment], buildClipOutputName(file.name), { type: 'audio/wav' });
       }
-      const instrumental = await createInstrumental(source, setProgress);
+      const instrumental = await createInstrumental(source, setProgress, controller.signal);
+      controller.signal.throwIfAborted();
       setMinusResult(instrumental);
       setProgress({ phase: 'encode', progress: 1, message: 'Минус готов' });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : 'Не удалось сделать минус.');
+      if (!(caught instanceof DOMException && caught.name === 'AbortError')) {
+        setError(caught instanceof Error ? caught.message : 'Не удалось сделать минус.');
+      }
     } finally {
+      if (separationAbortRef.current === controller) separationAbortRef.current = null;
       setBusy(false);
+    }
+  };
+
+  const addResultToLibrary = async (kind: GeneratedResultKind, blob: Blob, outputName: string) => {
+    if (working || libraryResults[kind]) return;
+    setLibraryBusy(kind);
+    setLibraryError(null);
+    try {
+      const result = await addGeneratedTrackToLibrary(blob, outputName);
+      setLibraryResults((current) => ({
+        ...current,
+        [kind]: { trackId: result.track.id, status: result.status },
+      }));
+      showLibraryNotice(libraryNoticeMessage(kind, result.status));
+    } catch (caught) {
+      setLibraryError({
+        kind,
+        message: getErrorMessage(caught, 'Не удалось добавить трек в медиатеку.'),
+      });
+    } finally {
+      setLibraryBusy(null);
     }
   };
 
@@ -121,6 +187,9 @@ export function VocalRemovalPage() {
     setTrimResult(null);
     setMinusResult(null);
     setMinusScope('full');
+    setLibraryResults({});
+    setLibraryError(null);
+    setLibraryNotice(null);
     setError(null);
     setProgress(INITIAL_PROGRESS);
     if (inputRef.current) inputRef.current.value = '';
@@ -139,7 +208,7 @@ export function VocalRemovalPage() {
         </div>
         <div className="vocal-removal-badges" aria-label="Возможности обработки">
           <span className={capabilities.webGpu ? 'runtime-badge runtime-badge--ready' : 'runtime-badge'}>
-            {capabilities.webGpu ? 'WebGPU доступен' : 'WASM режим'}
+            {capabilities.webGpu ? 'WebGPU поддерживается' : 'WASM режим'}
           </span>
           <span className="runtime-badge">Локальная обработка</span>
         </div>
@@ -214,6 +283,7 @@ export function VocalRemovalPage() {
             <InlineAudioPlayer
               source={sourceUrl}
               label="Оригинальный трек"
+              disabled={working || !active}
               onDuration={(duration) => {
                 if (!Number.isFinite(duration) || duration <= 0) return;
                 setSourceDuration(duration);
@@ -221,6 +291,20 @@ export function VocalRemovalPage() {
                 setTrimEnd((current) => current > 0 ? clampNumber(current, MIN_CLIP_SECONDS, duration) : duration);
               }}
             />
+            <div className="vocal-result-actions">
+              <button
+                className="secondary-button"
+                disabled={working || Boolean(libraryResults.source)}
+                onClick={() => void addResultToLibrary('source', file, file.name)}
+              >
+                {libraryResults.source
+                  ? libraryResultLabel('source', libraryResults.source.status)
+                  : libraryBusy === 'source'
+                    ? 'Добавляем оригинал…'
+                    : 'Добавить оригинал в медиатеку'}
+              </button>
+            </div>
+            {libraryError?.kind === 'source' && <small className="vocal-library-error" role="alert">{libraryError.message}</small>}
           </section>
         )}
 
@@ -229,26 +313,28 @@ export function VocalRemovalPage() {
             source={sourceUrl}
             duration={sourceDuration}
             range={trimRange}
-            disabled={working}
+            disabled={working || !active}
             busy={clipBusy}
             onChange={updateTrimRange}
             onCreateClip={() => void createClip()}
+            resultUrl={trimResultUrl}
+            outputName={clipOutputName}
+            addToLibraryLabel={
+              libraryResults.trim
+                ? libraryResultLabel('trim', libraryResults.trim.status)
+                : libraryBusy === 'trim'
+                  ? 'Добавляем фрагмент…'
+                  : 'Добавить фрагмент в медиатеку'
+            }
+            addToLibraryDisabled={working || Boolean(libraryResults.trim)}
+            libraryError={libraryError?.kind === 'trim' ? libraryError.message : undefined}
+            onAddToLibrary={() => {
+              if (trimResult) void addResultToLibrary('trim', trimResult, clipOutputName);
+            }}
           />
         )}
 
-        {trimResult && trimResultUrl && (
-          <section className="vocal-result-card track-clip-result">
-            <div className="vocal-result-card__status"><span>✓</span><strong>Обрезанный трек готов</strong></div>
-            <h2>{clipOutputName}</h2>
-            <p>Получился отдельный WAV выбранной длины. Его можно скачать или продолжить работу с исходником ниже.</p>
-            <InlineAudioPlayer source={trimResultUrl} label="Обрезанный трек" />
-            <div className="vocal-result-actions">
-              <a className="primary-button vocal-download-button" href={trimResultUrl} download={clipOutputName}>Скачать фрагмент WAV</a>
-            </div>
-          </section>
-        )}
-
-        {file && sourceDuration > 0 && (
+        {file && (
           <section className="minus-action-card">
             <div className="minus-action-card__heading">
               <span className="eyebrow">Удаление вокала</span>
@@ -256,11 +342,23 @@ export function VocalRemovalPage() {
               <p>Для короткой игровой нарезки лучше обрабатывать выбранный фрагмент — это быстрее и требует меньше памяти.</p>
             </div>
             <div className="minus-action-options">
-              <button className="primary-button primary-button--large" disabled={working} onClick={() => void processFile('fragment')}>
-                {busy && minusScope === 'fragment' ? 'Делаем минус…' : `Минус из фрагмента · ${formatAudioTime(selectedDuration)}`}
+              <button
+                className="primary-button primary-button--large"
+                disabled={working || sourceDuration <= 0 || selectedDuration < MIN_CLIP_SECONDS}
+                onClick={() => void processFile('fragment')}
+              >
+                {busy && minusScope === 'fragment'
+                  ? 'Делаем минус…'
+                  : sourceDuration > 0
+                    ? `Минус из фрагмента · ${formatAudioTime(selectedDuration)}`
+                    : 'Минус из фрагмента · ждём длительность'}
               </button>
               <button className="secondary-button" disabled={working} onClick={() => void processFile('full')}>
-                {busy && minusScope === 'full' ? 'Делаем минус…' : `Минус из всего трека · ${formatAudioTime(sourceDuration)}`}
+                {busy && minusScope === 'full'
+                  ? 'Делаем минус…'
+                  : sourceDuration > 0
+                    ? `Минус из всего трека · ${formatAudioTime(sourceDuration)}`
+                    : 'Минус из всего трека'}
               </button>
             </div>
             <small>Ограничение разделения вокала: до {Math.round(capabilities.maxSourceBytes / 1024 / 1024)} МБ и {Math.round(capabilities.maxDurationSeconds / 60)} минут на обрабатываемый источник.</small>
@@ -297,16 +395,45 @@ export function VocalRemovalPage() {
             <p>{minusScope === 'fragment'
               ? `Обработан только выбранный участок ${formatAudioTime(trimStart)} — ${formatAudioTime(trimEnd)}. В дорожке оставлены барабаны, бас и остальные инструменты.`
               : 'Обработан весь трек. В дорожке оставлены барабаны, бас и остальные инструменты.'} Небольшие остатки вокала или реверберации возможны — это нормальное ограничение нейросетевого разделения.</p>
-            <InlineAudioPlayer source={minusResultUrl} label="Готовый минус" />
+            <InlineAudioPlayer source={minusResultUrl} label="Готовый минус" disabled={working || !active} />
             <div className="vocal-result-actions">
               <a className="primary-button vocal-download-button" href={minusResultUrl} download={minusOutputName}>Скачать минус WAV</a>
-              <button className="secondary-button" onClick={reset}>Обработать другой трек</button>
+              <button
+                className="secondary-button"
+                disabled={working || Boolean(libraryResults.minus)}
+                onClick={() => void addResultToLibrary('minus', minusResult, minusOutputName)}
+              >
+                {libraryResults.minus ? libraryResultLabel('minus', libraryResults.minus.status) : libraryBusy === 'minus' ? 'Добавляем минус…' : 'Добавить минус в медиатеку'}
+              </button>
+              <button className="secondary-button" disabled={working} onClick={reset}>Обработать другой трек</button>
             </div>
+            {libraryError?.kind === 'minus' && <small className="vocal-library-error" role="alert">{libraryError.message}</small>}
           </section>
         )}
       </section>
+
+      {libraryNotice && (
+        <div key={libraryNotice.id} className="vocal-media-toast" role="status" aria-live="polite">
+          <span aria-hidden="true">✓</span>
+          <strong>{libraryNotice.message}</strong>
+        </div>
+      )}
     </main>
   );
+}
+
+function libraryNoticeMessage(kind: GeneratedResultKind, status: AddGeneratedTrackResult['status']) {
+  if (status === 'existing') return 'Этот трек уже есть в медиатеке';
+  if (kind === 'source') return 'Оригинал добавлен в медиатеку';
+  if (kind === 'trim') return 'Фрагмент добавлен в медиатеку';
+  return 'Минус добавлен в медиатеку';
+}
+
+function libraryResultLabel(kind: GeneratedResultKind, status: AddGeneratedTrackResult['status']) {
+  if (status === 'existing') return '✓ Уже есть в медиатеке';
+  if (kind === 'source') return '✓ Оригинал добавлен в медиатеку';
+  if (kind === 'trim') return '✓ Фрагмент добавлен в медиатеку';
+  return '✓ Минус добавлен в медиатеку';
 }
 
 function buildClipOutputName(name: string) {

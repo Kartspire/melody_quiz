@@ -3,11 +3,13 @@ export function AudioTimeline({
   duration,
   onSeek,
   className = '',
+  disabled = false,
 }: {
   progress: number;
   duration: number;
   onSeek: (time: number) => void;
   className?: string;
+  disabled?: boolean;
 }) {
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   const safeProgress = Number.isFinite(progress) && progress > 0
@@ -24,7 +26,7 @@ export function AudioTimeline({
         max={safeDuration}
         step={0.1}
         value={safeDuration ? Math.min(safeProgress, safeDuration) : 0}
-        disabled={!safeDuration}
+        disabled={disabled || !safeDuration}
         onChange={(event) => onSeek(Number(event.target.value))}
       />
       <div className="time-row">

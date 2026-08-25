@@ -125,9 +125,11 @@ export function App() {
 
       <GameLaunchDialog />
       <div className="app-content">
+        <div hidden={screen !== 'vocal-removal'}>
+          <VocalRemovalPage active={screen === 'vocal-removal'} />
+        </div>
         {screen === 'library' && <GameLibrary />}
         {screen === 'media' && <MediaLibrary />}
-        {screen === 'vocal-removal' && <VocalRemovalPage />}
         {screen === 'settings' && <SettingsPage />}
         {screen === 'admin' && (activeGame ? <AdminPanel /> : <GameLibrary />)}
         {screen === 'game' && !activeGame && <GameLibrary />}

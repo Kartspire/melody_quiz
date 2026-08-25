@@ -11,6 +11,12 @@ export function TrackTrimEditor({
   busy,
   onChange,
   onCreateClip,
+  resultUrl,
+  outputName,
+  addToLibraryLabel,
+  addToLibraryDisabled,
+  libraryError,
+  onAddToLibrary,
 }: {
   source: string;
   duration: number;
@@ -19,6 +25,12 @@ export function TrackTrimEditor({
   busy: boolean;
   onChange: (range: TrimRange) => void;
   onCreateClip: () => void;
+  resultUrl?: string;
+  outputName: string;
+  addToLibraryLabel: string;
+  addToLibraryDisabled: boolean;
+  libraryError?: string;
+  onAddToLibrary: () => void;
 }) {
   const selectedDuration = Math.max(0, range.end - range.start);
 
@@ -65,7 +77,7 @@ export function TrackTrimEditor({
 
       <div className="trim-preview">
         <span>Предпрослушивание выбранного участка</span>
-        <InlineAudioPlayer source={source} label="Выбранный фрагмент" range={range} />
+        <InlineAudioPlayer source={source} label="Выбранный фрагмент" range={range} disabled={disabled} />
       </div>
 
       <div className="track-editor-actions">
@@ -74,6 +86,28 @@ export function TrackTrimEditor({
         </button>
         <small>Фрагмент: {formatAudioTime(range.start)} — {formatAudioTime(range.end)}</small>
       </div>
+
+      {resultUrl && (
+        <div className="track-editor-result">
+          <div className="vocal-result-card__status">
+            <span>✓</span>
+            <strong>Фрагмент готов</strong>
+          </div>
+          <div className="vocal-result-actions">
+            <a className="primary-button vocal-download-button" href={resultUrl} download={outputName}>
+              Скачать фрагмент WAV
+            </a>
+            <button
+              className="secondary-button"
+              disabled={addToLibraryDisabled}
+              onClick={onAddToLibrary}
+            >
+              {addToLibraryLabel}
+            </button>
+          </div>
+          {libraryError && <small className="vocal-library-error" role="alert">{libraryError}</small>}
+        </div>
+      )}
     </section>
   );
 }

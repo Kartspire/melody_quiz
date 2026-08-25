@@ -69,24 +69,34 @@ let processor: DemucsProcessorLike | null = null;
 let activeProgressHandler: ProgressHandler | null = null;
 let separationInProgress = false;
 let releaseRequested = false;
+let activeAbortSignal: AbortSignal | null = null;
 
-export async function createInstrumental(file: File, onProgress: ProgressHandler): Promise<Blob> {
+export async function createInstrumental(
+  file: File,
+  onProgress: ProgressHandler,
+  signal?: AbortSignal,
+): Promise<Blob> {
   if (separationInProgress) throw new Error('Сейчас уже обрабатывается другой трек.');
   assertSupportedFile(file);
 
+  signal?.throwIfAborted();
   separationInProgress = true;
   releaseRequested = false;
   activeProgressHandler = onProgress;
+  activeAbortSignal = signal ?? null;
 
   let audioContext: AudioContext | null = null;
   try {
     emit('runtime', null, 'Подготавливаем модуль разделения…');
     const currentProcessor = await getProcessor();
+    signal?.throwIfAborted();
 
     emit('decode', null, 'Декодируем аудиофайл…');
     audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     const sourceBytes = await file.arrayBuffer();
+    signal?.throwIfAborted();
     const decoded = await audioContext.decodeAudioData(sourceBytes);
+    signal?.throwIfAborted();
 
     if (!Number.isFinite(decoded.duration) || decoded.duration <= 0) {
       throw new Error('Не удалось определить длительность аудиофайла.');
@@ -102,10 +112,12 @@ export async function createInstrumental(file: File, onProgress: ProgressHandler
 
     emit('separate', 0, 'Отделяем вокал от музыки…');
     let result: SeparationResult | null = await currentProcessor.separate(left, right);
+    signal?.throwIfAborted();
 
     emit('encode', null, 'Собираем инструментальную дорожку…');
     const instrumental = mixInstrumental(result);
     result = null;
+    signal?.throwIfAborted();
 
     return encodeStereoWav(instrumental.left, instrumental.right, SAMPLE_RATE);
   } catch (error) {
@@ -113,6 +125,7 @@ export async function createInstrumental(file: File, onProgress: ProgressHandler
     throw normalizeSeparationError(error);
   } finally {
     activeProgressHandler = null;
+    activeAbortSignal = null;
     separationInProgress = false;
     if (audioContext) void audioContext.close().catch(() => undefined);
     if (releaseRequested) void releaseVocalSeparator();
@@ -263,6 +276,7 @@ function normalizeSeparationError(error: unknown) {
 }
 
 function emit(phase: VocalRemovalPhase, progress: number | null, message: string) {
+  if (activeAbortSignal?.aborted) return;
   activeProgressHandler?.({ phase, progress, message });
 }
 
