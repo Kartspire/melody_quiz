@@ -16,10 +16,12 @@ import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from '../model/limits';
 import type { InterRound } from '../model/types';
 import { DraftNumberInput } from '../components/DraftNumberInput';
 import { MediaTrackPicker } from '../components/MediaTrackPicker';
+import { useFeedback } from '../components/feedback/FeedbackProvider';
 import { getInterRoundTemplate } from './templates';
 
 export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
   const mediaTracks = useUnit($mediaTracks);
+  const { confirm } = useFeedback();
   const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
   const [picker, setPicker] = useState<{ currentTrackId?: string; onSelect: (trackId?: string) => void } | null>(null);
   const template = getInterRoundTemplate(interRound.templateId);
@@ -117,9 +119,14 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
                   disabled={interRound.stages.length <= 1}
                   title={interRound.stages.length <= 1 ? 'В межраунде должен остаться хотя бы один этап' : 'Удалить этап'}
                   onClick={() => {
-                    if (window.confirm(`Удалить этап ${stageIndex + 1} из межраунда?`)) {
-                      commonThemeStageRemoved({ interRoundId: interRound.id, stageId: stage.id });
-                    }
+                    void confirm({
+                      title: `Удалить этап ${stageIndex + 1} из межраунда?`,
+                      description: 'Все четыре назначения треков и ответ для этого этапа будут удалены.',
+                      confirmLabel: 'Удалить этап',
+                      tone: 'danger',
+                    }).then((confirmed) => {
+                      if (confirmed) commonThemeStageRemoved({ interRoundId: interRound.id, stageId: stage.id });
+                    });
                   }}
                 >Удалить этап</button>
               </div>
@@ -172,7 +179,12 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
 
       <div className="inter-round-danger-zone">
         <button className="danger-ghost" onClick={() => {
-          if (window.confirm(`Удалить межраунд «${interRound.title}»?`)) interRoundRemoved(interRound.id);
+          void confirm({
+            title: `Удалить межраунд «${interRound.title}»?`,
+            description: 'Межраунд и все его задания будут удалены из структуры игры.',
+            confirmLabel: 'Удалить межраунд',
+            tone: 'danger',
+          }).then((confirmed) => { if (confirmed) interRoundRemoved(interRound.id); });
         }}>Удалить межраунд</button>
       </div>
 

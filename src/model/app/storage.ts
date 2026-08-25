@@ -15,6 +15,14 @@ import {
 } from '../core/state';
 import { normalizeSession, reconcileSession } from '../session';
 import type { GameSession, PersistedState } from '../types';
+import {
+  deriveStorageSaveStatus,
+  hasSessionActivityChanged,
+  pendingAfterSuccessfulSave,
+  readOnlyAfterStorageFailure,
+  sessionActivitySnapshot,
+  type StorageSaveOutcome,
+} from './storagePolicy';
 
 export const appStarted = createEvent();
 /** Retry initial IndexedDB hydration after a load/open failure. */
@@ -53,8 +61,8 @@ export const $storageError = createStore<string | null>(null)
 
 export const $storageReadOnly = createStore(false)
   .on(externalStorageChangeDetected, () => true)
-  .on(saveFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly)
-  .on(persistedStateImportFx.failData, (readOnly, error) => error instanceof StorageConflictError ? true : readOnly)
+  .on(saveFx.failData, readOnlyAfterStorageFailure)
+  .on(persistedStateImportFx.failData, readOnlyAfterStorageFailure)
   .on(loadFx.done, () => false);
 
 export const $hydrated = createStore(false)
@@ -67,12 +75,12 @@ export const $hydrated = createStore(false)
  */
 export const $pendingPersistedState = createStore<PersistedState | null>(null)
   .on(persistedStateChanged, (_, state) => state)
-  .on(saveFx.done, (pending, { params }) => pending === params ? null : pending)
+  .on(saveFx.done, (pending, { params }) => pendingAfterSuccessfulSave(pending, params))
   .on(persistedStateImportFx.doneData, () => null);
 
 export const $storageDirty = $pendingPersistedState.map((state) => state !== null);
 
-const $saveOutcome = createStore<'idle' | 'saved' | 'error'>('idle')
+const $saveOutcome = createStore<StorageSaveOutcome>('idle')
   .on(saveFx.done, () => 'saved')
   .on(saveFx.fail, () => 'error')
   .on(persistedStateImportFx.done, () => 'saved');
@@ -81,12 +89,7 @@ const $storageSaving = combine(saveFx.pending, persistedStateImportFx.pending, (
 
 export const $storageSaveStatus = combine(
   { outcome: $saveOutcome, dirty: $storageDirty, saving: $storageSaving },
-  ({ outcome, dirty, saving }): 'idle' | 'dirty' | 'saving' | 'saved' | 'error' => {
-    if (saving) return 'saving';
-    if (outcome === 'error') return 'error';
-    if (dirty) return 'dirty';
-    return outcome;
-  },
+  deriveStorageSaveStatus,
 );
 
 sample({ clock: [appStarted, storageRetryRequested], target: loadFx });
@@ -204,16 +207,6 @@ const unsubscribeExternalStorage = typeof window !== 'undefined'
   ? subscribeToExternalStorageChanges((revision) => externalStorageChangeDetected(revision))
   : null;
 
-
-function sessionActivitySnapshot(sessions: Record<string, GameSession>) {
-  return new Map(Object.values(sessions).map((session) => [session.gameId, session.updatedAt]));
-}
-
-function hasSessionActivityChanged(previous: Map<string, number>, next: Map<string, number>) {
-  if (previous.size !== next.size) return true;
-  for (const [gameId, updatedAt] of next) if (previous.get(gameId) !== updatedAt) return true;
-  return false;
-}
 
 function cancelScheduledSave() {
   if (typeof window === 'undefined') return;

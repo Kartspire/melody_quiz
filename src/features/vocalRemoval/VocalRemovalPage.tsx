@@ -2,9 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useObjectUrl } from '../../hooks/useObjectUrl';
 import { getErrorMessage } from '../../lib/errors';
 import { createTrimmedWav, MIN_CLIP_SECONDS, type TrimRange } from './audioClip';
-import { assertAudioProcessingFile, formatProcessingLimit } from './audioProcessingLimits';
-import { clampNumber, formatAudioTime } from './audioTime';
-import { InlineAudioPlayer } from './InlineAudioPlayer';
+import { assertAudioProcessingFile } from './audioProcessingLimits';
+import { clampNumber } from './audioTime';
 import {
   createInstrumental,
   getVocalRemovalCapabilities,
@@ -13,6 +12,8 @@ import {
 } from './separator';
 import { TrackTrimEditor } from './TrackTrimEditor';
 import { addGeneratedTrackToLibrary, type AddGeneratedTrackResult } from './addGeneratedTrackToLibrary';
+import { useFeedback } from '../../components/feedback/FeedbackProvider';
+import { VocalDropzone, VocalOriginalTrackPanel, VocalProgressPanel, VocalRemovalHeader, VocalResultPanel, VocalSeparationActions } from './VocalRemovalPanels';
 
 const INITIAL_PROGRESS: VocalRemovalProgress = {
   phase: 'runtime',
@@ -23,13 +24,11 @@ const INITIAL_PROGRESS: VocalRemovalProgress = {
 type MinusScope = 'full' | 'fragment';
 type GeneratedResultKind = 'source' | 'trim' | 'minus';
 type LibraryResult = Pick<AddGeneratedTrackResult, 'status'> & { trackId: string };
-type LibraryNotice = { id: number; message: string };
 
 export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const separationAbortRef = useRef<AbortController | null>(null);
   const clipAbortRef = useRef<AbortController | null>(null);
-  const libraryNoticeTimerRef = useRef<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [sourceDuration, setSourceDuration] = useState(0);
   const [trimStart, setTrimStart] = useState(0);
@@ -45,7 +44,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   const [libraryBusy, setLibraryBusy] = useState<GeneratedResultKind | null>(null);
   const [libraryError, setLibraryError] = useState<{ kind: GeneratedResultKind; message: string } | null>(null);
   const [libraryResults, setLibraryResults] = useState<Partial<Record<GeneratedResultKind, LibraryResult>>>({});
-  const [libraryNotice, setLibraryNotice] = useState<LibraryNotice | null>(null);
+  const { notify } = useFeedback();
   const capabilities = useMemo(() => getVocalRemovalCapabilities(), []);
   const sourceUrl = useObjectUrl(file ?? undefined);
   const trimResultUrl = useObjectUrl(trimResult ?? undefined);
@@ -63,7 +62,6 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
   useEffect(() => () => {
     separationAbortRef.current?.abort();
     clipAbortRef.current?.abort();
-    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
     void releaseVocalSeparator();
   }, []);
 
@@ -75,14 +73,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
     void releaseVocalSeparator();
   }, [active]);
 
-  const showLibraryNotice = (message: string) => {
-    if (libraryNoticeTimerRef.current !== null) window.clearTimeout(libraryNoticeTimerRef.current);
-    setLibraryNotice({ id: Date.now(), message });
-    libraryNoticeTimerRef.current = window.setTimeout(() => {
-      setLibraryNotice(null);
-      libraryNoticeTimerRef.current = null;
-    }, 3200);
-  };
+
 
   const clearTrimDependentResults = () => {
     setTrimResult(null);
@@ -113,7 +104,6 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
     setMinusScope('full');
     setLibraryResults({});
     setLibraryError(null);
-    setLibraryNotice(null);
     setError(null);
     setProgress(INITIAL_PROGRESS);
   };
@@ -197,7 +187,10 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
         ...current,
         [kind]: { trackId: result.track.id, status: result.status },
       }));
-      showLibraryNotice(libraryNoticeMessage(kind, result.status));
+      notify({
+        kind: result.status === 'existing' ? 'info' : 'success',
+        message: libraryNoticeMessage(kind, result.status),
+      });
     } catch (caught) {
       setLibraryError({
         kind,
@@ -219,7 +212,6 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
     setMinusScope('full');
     setLibraryResults({});
     setLibraryError(null);
-    setLibraryNotice(null);
     setError(null);
     setProgress(INITIAL_PROGRESS);
     if (inputRef.current) inputRef.current.value = '';
@@ -230,112 +222,34 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
 
   return (
     <main className="vocal-removal-page page-shell">
-      <div className="page-heading vocal-removal-heading">
-        <div>
-          <span className="eyebrow">Инструмент для ведущего</span>
-          <h1>Обработка трека</h1>
-          <p>Обрежьте нужный фрагмент песни или удалите из него вокал. Нарезка выполняется локально, а для минуса HTDemucs отделяет голос от инструментов прямо в браузере.</p>
-        </div>
-        <div className="vocal-removal-badges" aria-label="Возможности обработки">
-          <span className={capabilities.webGpu ? 'runtime-badge runtime-badge--ready' : 'runtime-badge'}>
-            {capabilities.webGpu ? 'WebGPU поддерживается' : 'WASM режим'}
-          </span>
-          <span className="runtime-badge">Локальная обработка</span>
-        </div>
-      </div>
-
-      <section className="vocal-removal-info">
-        <div>
-          <strong>Нарезка без загрузок</strong>
-          <span>Выбранный участок вырезается на вашем компьютере и сохраняется в WAV.</span>
-        </div>
-        <div>
-          <strong>Минус работает локально</strong>
-          <span>Исходная песня не отправляется на сервер приложения. Модель скачивается только при первом запуске разделения.</span>
-        </div>
-        <div>
-          <strong>Фрагмент обрабатывается быстрее</strong>
-          <span>Для игры можно сначала оставить 30–60 секунд, а затем запускать HTDemucs только для этого участка.</span>
-        </div>
-      </section>
+      <VocalRemovalHeader webGpu={capabilities.webGpu} />
 
       <section className="vocal-removal-workspace">
-        <div
-          className={dragging ? 'vocal-dropzone vocal-dropzone--dragging' : file ? 'vocal-dropzone vocal-dropzone--ready' : 'vocal-dropzone'}
-          onDragEnter={(event) => {
-            event.preventDefault();
-            if (!working) setDragging(true);
-          }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={(event) => {
-            event.preventDefault();
-            const related = event.relatedTarget;
-            if (!(related instanceof Node) || !event.currentTarget.contains(related)) setDragging(false);
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            setDragging(false);
-            selectFile(event.dataTransfer.files?.[0]);
-          }}
-        >
-          <input
-            ref={inputRef}
-            type="file"
-            accept="audio/*,.mp3,.wav,.ogg,.m4a,.aac,.flac"
-            disabled={working}
-            onChange={(event) => selectFile(event.target.files?.[0])}
-          />
-          <div className="vocal-dropzone__icon" aria-hidden="true">♫</div>
-          {file ? (
-            <>
-              <strong>{file.name}</strong>
-              <span>{formatBytes(file.size)}</span>
-              <button className="secondary-button" disabled={working} onClick={() => inputRef.current?.click()}>Выбрать другой файл</button>
-            </>
-          ) : (
-            <>
-              <strong>Перетащите песню сюда</strong>
-              <span>MP3, WAV, OGG, M4A и другие форматы, которые поддерживает браузер</span>
-              <button className="primary-button" onClick={() => inputRef.current?.click()}>Выбрать файл</button>
-            </>
-          )}
-        </div>
+        <VocalDropzone
+          file={file}
+          working={working}
+          dragging={dragging}
+          inputRef={inputRef}
+          onDraggingChange={setDragging}
+          onSelectFile={selectFile}
+        />
 
         {file && sourceUrl && (
-          <section className="vocal-track-card">
-            <div className="vocal-track-card__heading">
-              <div>
-                <span className="eyebrow">Оригинал</span>
-                <strong>{file.name}</strong>
-              </div>
-              <span>{formatBytes(file.size)}</span>
-            </div>
-            <InlineAudioPlayer
-              source={sourceUrl}
-              label="Оригинальный трек"
-              disabled={working || !active}
-              onDuration={(duration) => {
-                if (!Number.isFinite(duration) || duration <= 0) return;
-                setSourceDuration(duration);
-                setTrimStart((current) => clampNumber(current, 0, Math.max(0, duration - MIN_CLIP_SECONDS)));
-                setTrimEnd((current) => current > 0 ? clampNumber(current, MIN_CLIP_SECONDS, duration) : duration);
-              }}
-            />
-            <div className="vocal-result-actions">
-              <button
-                className="secondary-button"
-                disabled={working || Boolean(libraryResults.source)}
-                onClick={() => void addResultToLibrary('source', file, file.name)}
-              >
-                {libraryResults.source
-                  ? libraryResultLabel('source', libraryResults.source.status)
-                  : libraryBusy === 'source'
-                    ? 'Добавляем оригинал…'
-                    : 'Добавить оригинал в медиатеку'}
-              </button>
-            </div>
-            {libraryError?.kind === 'source' && <small className="vocal-library-error" role="alert">{libraryError.message}</small>}
-          </section>
+          <VocalOriginalTrackPanel
+            file={file}
+            source={sourceUrl}
+            disabled={working || !active}
+            addLabel={libraryResults.source ? libraryResultLabel('source', libraryResults.source.status) : libraryBusy === 'source' ? 'Добавляем оригинал…' : 'Добавить оригинал в медиатеку'}
+            addDisabled={working || Boolean(libraryResults.source)}
+            libraryError={libraryError?.kind === 'source' ? libraryError.message : undefined}
+            onDuration={(duration) => {
+              if (!Number.isFinite(duration) || duration <= 0) return;
+              setSourceDuration(duration);
+              setTrimStart((current) => clampNumber(current, 0, Math.max(0, duration - MIN_CLIP_SECONDS)));
+              setTrimEnd((current) => current > 0 ? clampNumber(current, MIN_CLIP_SECONDS, duration) : duration);
+            }}
+            onAdd={() => void addResultToLibrary('source', file, file.name)}
+          />
         )}
 
         {file && sourceUrl && sourceDuration > 0 && (
@@ -347,7 +261,7 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
             busy={clipBusy}
             onChange={updateTrimRange}
             onCreateClip={() => void createClip()}
-            resultUrl={trimResultUrl}
+            resultUrl={trimResultUrl ?? undefined}
             outputName={clipOutputName}
             addToLibraryLabel={
               libraryResults.trim
@@ -365,63 +279,25 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
         )}
 
         {file && (
-          <section className="minus-action-card">
-            <div className="minus-action-card__heading">
-              <span className="eyebrow">Удаление вокала</span>
-              <h2>Сделать минус</h2>
-              <p>Для короткой игровой нарезки лучше обрабатывать выбранный фрагмент — это быстрее и требует меньше памяти.</p>
-            </div>
-            <div className="minus-action-options">
-              <button
-                className="primary-button primary-button--large"
-                disabled={working || !canProcessFragment}
-                onClick={() => void processFile('fragment')}
-              >
-                {busy && minusScope === 'fragment'
-                  ? 'Делаем минус…'
-                  : sourceDuration > 0
-                    ? `Минус из фрагмента · ${formatAudioTime(selectedDuration)}`
-                    : 'Минус из фрагмента · ждём длительность'}
-              </button>
-              <button className="secondary-button" disabled={working || !canProcessFullTrack} onClick={() => void processFile('full')}>
-                {busy && minusScope === 'full'
-                  ? 'Делаем минус…'
-                  : sourceDuration > 0
-                    ? `Минус из всего трека · ${formatAudioTime(sourceDuration)}`
-                    : 'Минус из всего трека · ждём длительность'}
-              </button>
-            </div>
-            <small>Для безопасной работы HTDemucs обрабатывает не более {formatProcessingLimit(capabilities.maxDurationSeconds)} за один запуск. Исходник для локальной нарезки — до {formatProcessingLimit(capabilities.maxDecodeDurationSeconds)} и {Math.round(capabilities.maxSourceBytes / 1024 / 1024)} МБ.</small>
-            {sourceDuration > 0 && fullTrackTooLong && !sourceTooLongToDecode && (
-              <small className="vocal-processing-warning">Весь трек длиннее безопасного лимита для HTDemucs. Выберите участок до {formatProcessingLimit(capabilities.maxDurationSeconds)} и запустите минус из фрагмента.</small>
-            )}
-            {fragmentTooLong && !sourceTooLongToDecode && (
-              <small className="vocal-processing-warning">Текущий фрагмент слишком длинный для удаления вокала. Сократите его до {formatProcessingLimit(capabilities.maxDurationSeconds)}.</small>
-            )}
-            {sourceTooLongToDecode && (
-              <small className="vocal-processing-warning vocal-processing-warning--danger">Исходник длиннее {formatProcessingLimit(capabilities.maxDecodeDurationSeconds)}. В текущем browser-only режиме его безопасная нарезка отключена, чтобы не переполнить память вкладки.</small>
-            )}
-          </section>
+          <VocalSeparationActions
+            working={working}
+            busy={busy}
+            minusScope={minusScope}
+            sourceDuration={sourceDuration}
+            selectedDuration={selectedDuration}
+            canProcessFragment={canProcessFragment}
+            canProcessFullTrack={canProcessFullTrack}
+            fullTrackTooLong={fullTrackTooLong}
+            fragmentTooLong={fragmentTooLong}
+            sourceTooLongToDecode={sourceTooLongToDecode}
+            maxDurationSeconds={capabilities.maxDurationSeconds}
+            maxDecodeDurationSeconds={capabilities.maxDecodeDurationSeconds}
+            maxSourceBytes={capabilities.maxSourceBytes}
+            onProcess={(scope) => void processFile(scope)}
+          />
         )}
 
-        {busy && (
-          <section className="vocal-progress-card" aria-live="polite">
-            <div className="vocal-progress-card__header">
-              <div>
-                <span className="eyebrow">Обработка</span>
-                <strong>{progress.message || 'Подготавливаем обработку…'}</strong>
-              </div>
-              {progress.progress !== null && <b>{Math.round(progress.progress * 100)}%</b>}
-            </div>
-            <div className="vocal-progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress.progress === null ? undefined : Math.round(progress.progress * 100)}>
-              <span className={progress.progress === null ? 'vocal-progress-track__indeterminate' : ''} style={progress.progress === null ? undefined : { width: `${progress.progress * 100}%` }} />
-            </div>
-            <div className="vocal-progress-card__footer">
-              <p>{phaseHint(progress.phase)}</p>
-              <button className="secondary-button" onClick={cancelSeparation}>Отменить обработку</button>
-            </div>
-          </section>
-        )}
+        {busy && <VocalProgressPanel progress={progress} onCancel={cancelSeparation} />}
 
         {error && (
           <section className="vocal-error-card" role="alert">
@@ -431,35 +307,22 @@ export function VocalRemovalPage({ active = true }: { active?: boolean }) {
         )}
 
         {minusResult && minusResultUrl && (
-          <section className="vocal-result-card">
-            <div className="vocal-result-card__status"><span>✓</span><strong>Минус готов</strong></div>
-            <h2>{minusOutputName}</h2>
-            <p>{minusScope === 'fragment'
-              ? `Обработан только выбранный участок ${formatAudioTime(trimStart)} — ${formatAudioTime(trimEnd)}. В дорожке оставлены барабаны, бас и остальные инструменты.`
-              : 'Обработан весь трек. В дорожке оставлены барабаны, бас и остальные инструменты.'} Небольшие остатки вокала или реверберации возможны — это нормальное ограничение нейросетевого разделения.</p>
-            <InlineAudioPlayer source={minusResultUrl} label="Готовый минус" disabled={working || !active} />
-            <div className="vocal-result-actions">
-              <a className="primary-button vocal-download-button" href={minusResultUrl} download={minusOutputName}>Скачать минус WAV</a>
-              <button
-                className="secondary-button"
-                disabled={working || Boolean(libraryResults.minus)}
-                onClick={() => void addResultToLibrary('minus', minusResult, minusOutputName)}
-              >
-                {libraryResults.minus ? libraryResultLabel('minus', libraryResults.minus.status) : libraryBusy === 'minus' ? 'Добавляем минус…' : 'Добавить минус в медиатеку'}
-              </button>
-              <button className="secondary-button" disabled={working} onClick={reset}>Обработать другой трек</button>
-            </div>
-            {libraryError?.kind === 'minus' && <small className="vocal-library-error" role="alert">{libraryError.message}</small>}
-          </section>
+          <VocalResultPanel
+            outputName={minusOutputName}
+            scope={minusScope}
+            trimStart={trimStart}
+            trimEnd={trimEnd}
+            source={minusResultUrl}
+            disabled={working || !active}
+            addLabel={libraryResults.minus ? libraryResultLabel('minus', libraryResults.minus.status) : libraryBusy === 'minus' ? 'Добавляем минус…' : 'Добавить минус в медиатеку'}
+            addDisabled={working || Boolean(libraryResults.minus)}
+            libraryError={libraryError?.kind === 'minus' ? libraryError.message : undefined}
+            onAdd={() => void addResultToLibrary('minus', minusResult, minusOutputName)}
+            onReset={reset}
+          />
         )}
       </section>
 
-      {libraryNotice && (
-        <div key={libraryNotice.id} className="vocal-media-toast" role="status" aria-live="polite">
-          <span aria-hidden="true">✓</span>
-          <strong>{libraryNotice.message}</strong>
-        </div>
-      )}
     </main>
   );
 }
@@ -490,20 +353,4 @@ function buildMinusOutputName(name: string, scope: MinusScope) {
 
 function baseName(name: string) {
   return name.replace(/\.[^.]+$/, '').trim() || 'track';
-}
-
-function formatBytes(bytes: number) {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} КБ`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
-}
-
-function phaseHint(phase: VocalRemovalProgress['phase']) {
-  switch (phase) {
-    case 'runtime': return 'ML-модуль загружается только для этого инструмента и не влияет на старт обычной игры.';
-    case 'decode': return 'Браузер подготавливает выбранный источник для модели.';
-    case 'model-download': return 'Это самая большая загрузка. При повторном использовании файл модели обычно берётся из HTTP-кэша браузера.';
-    case 'model-init': return 'ONNX Runtime подготавливает модель для вашего GPU или WASM.';
-    case 'separate': return 'HTDemucs обрабатывает песню фрагментами и выделяет vocals, drums, bass и other.';
-    case 'encode': return 'Инструментальные дорожки объединяются и сохраняются в совместимый WAV.';
-  }
 }

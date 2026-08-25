@@ -472,4 +472,3 @@ export function isBoundedText(value: unknown, maxLength: number): value is strin
 function hasPlayableTrack(trackId: string | undefined, trackById: Map<string, MediaTrack>, audioById: Map<string, AudioAsset>) {
   return hasAvailableAudioAssetReference(trackId, trackById, audioById);
 }
-

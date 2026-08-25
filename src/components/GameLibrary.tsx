@@ -7,9 +7,6 @@ import {
   $songs,
   activeGameChanged,
   gameCreated,
-  gameDeleted,
-  gameDuplicated,
-  gameLaunchRequested,
   hasSessionProgress,
   persistedStateImportFx,
   screenChanged,
@@ -25,19 +22,15 @@ import {
   type PreparedGameImport,
 } from '../lib/melodyPackage';
 import type { GameConfig } from '../model/types';
-import { DATA_LIMITS } from '../model/limits';
 import { getErrorMessage } from '../lib/errors';
-import { ActionMenu } from './ActionMenu';
-import { Dialog } from './Dialog';
-import { ImportVerificationSummary } from './ImportVerificationSummary';
+import { useFeedback } from './feedback/FeedbackProvider';
+import { CreateGamePanel } from './gameLibrary/CreateGamePanel';
+import { GameImportDialog } from './gameLibrary/GameImportDialog';
+import { GameLibraryCard } from './gameLibrary/GameLibraryCard';
 
 export function GameLibrary() {
-  const [games, sessions, songs, persistedState] = useUnit([
-    $games,
-    $sessions,
-    $songs,
-    $persistedState,
-  ]);
+  const [games, sessions, songs, persistedState] = useUnit([$games, $sessions, $songs, $persistedState]);
+  const { notify } = useFeedback();
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState('Новая игра');
   const [busy, setBusy] = useState<string | null>(null);
@@ -51,13 +44,22 @@ export function GameLibrary() {
     screenChanged('admin');
   };
 
+  const createGame = () => {
+    if (!title.trim()) return;
+    gameCreated(title);
+    setCreating(false);
+    setTitle('Новая игра');
+    screenChanged('admin');
+  };
+
   const exportGame = async (game: GameConfig) => {
     try {
       setBusy(`export:${game.id}`);
       const result = await exportGamePackage(game, songs, persistedState.mediaTracks, persistedState.audioAssets);
       downloadBlob(result.blob, result.filename);
+      notify({ kind: 'success', message: `Игра «${game.title || 'Без названия'}» экспортирована.` });
     } catch (error) {
-      window.alert(getErrorMessage(error, 'Не удалось экспортировать игру.'));
+      notify({ kind: 'error', title: 'Не удалось экспортировать игру', message: getErrorMessage(error, 'Попробуйте ещё раз.') });
     } finally {
       setBusy(null);
     }
@@ -72,7 +74,7 @@ export function GameLibrary() {
       const preview = await prepareGameImport(packageData, persistedState);
       setPendingImport({ packageData, preview });
     } catch (error) {
-      window.alert(getErrorMessage(error, 'Не удалось прочитать архив игры.'));
+      notify({ kind: 'error', title: 'Не удалось прочитать архив игры', message: getErrorMessage(error, 'Проверьте файл и попробуйте ещё раз.') });
     } finally {
       setBusy(null);
       if (importInputRef.current) importInputRef.current.value = '';
@@ -86,10 +88,12 @@ export function GameLibrary() {
       const latestPrepared = await prepareGameImport(pendingImport.packageData, persistedState);
       const nextState = finalizeGameImport(latestPrepared, persistedState, mode);
       await persistedStateImportFx(nextState);
+      const title = pendingImport.packageData.game?.title || 'Игра';
       setPendingImport(null);
       screenChanged('library');
+      notify({ kind: 'success', message: `«${title}» импортирована.` });
     } catch (error) {
-      window.alert(getErrorMessage(error, 'Не удалось сохранить импортированную игру.'));
+      notify({ kind: 'error', title: 'Не удалось сохранить импортированную игру', message: getErrorMessage(error, 'Попробуйте ещё раз.') });
     } finally {
       setBusy(null);
     }
@@ -113,13 +117,7 @@ export function GameLibrary() {
         )}
       </div>
 
-      <input
-        ref={importInputRef}
-        className="hidden-file-input"
-        type="file"
-        accept=".melody,application/zip"
-        onChange={(event) => void selectImportFile(event.target.files?.[0])}
-      />
+      <input ref={importInputRef} className="hidden-file-input" type="file" accept=".melody,application/zip" onChange={(event) => void selectImportFile(event.target.files?.[0])} />
 
       {sortedGames.length > 0 && (
         <div className="backup-hint">
@@ -127,38 +125,7 @@ export function GameLibrary() {
         </div>
       )}
 
-      {creating && (
-        <section className="create-game-panel">
-          <label className="field">
-            <span>Название новой игры</span>
-            <input
-              autoFocus
-              maxLength={DATA_LIMITS.text.gameTitle}
-              value={title}
-              onFocus={(event) => event.currentTarget.select()}
-              onChange={(event) => setTitle(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && title.trim()) {
-                  gameCreated(title);
-                  setCreating(false);
-                  setTitle('Новая игра');
-                  screenChanged('admin');
-                }
-                if (event.key === 'Escape') setCreating(false);
-              }}
-            />
-          </label>
-          <div className="inline-actions">
-            <button className="primary-button" disabled={!title.trim()} onClick={() => {
-              gameCreated(title);
-              setCreating(false);
-              setTitle('Новая игра');
-              screenChanged('admin');
-            }}>Создать и настроить</button>
-            <button className="secondary-button" onClick={() => setCreating(false)}>Отмена</button>
-          </div>
-        </section>
-      )}
+      {creating && <CreateGamePanel title={title} onTitleChange={setTitle} onCreate={createGame} onCancel={() => setCreating(false)} />}
 
       {sortedGames.length === 0 ? (
         creating ? null : (
@@ -174,143 +141,27 @@ export function GameLibrary() {
           </div>
         )
       ) : (
-      <section className="game-library-grid">
-        {sortedGames.map((game) => {
-          const session = sessions[game.id];
-          const hasProgress = hasSessionProgress(session);
-          const finished = Boolean(session && session.stageIndex >= game.stages.length);
-          const questionCount = game.rounds.reduce(
-            (total, round) => total + round.categories.reduce((sum, category) => sum + category.questions.length, 0),
-            0,
-          );
-          const assignedSongs = game.rounds.reduce(
-            (total, round) => total + round.categories.reduce(
-              (roundTotal, category) => roundTotal + category.questions.filter((question) => Boolean(question.songId)).length,
-              0,
-            ),
-            0,
-          );
-          const completed = session?.completedQuestionIds.length ?? 0;
-          const exporting = busy === `export:${game.id}`;
-
-          return (
-            <article className="game-library-card" key={game.id}>
-              <div className="game-library-card__head">
-                <div>
-                  <span className="eyebrow">{game.rounds.length} раундов{game.interRounds.length ? ` · ${game.interRounds.length} межраундов` : ''} · {assignedSongs}/{questionCount} песен</span>
-                  <h2>{game.title || 'Без названия'}</h2>
-                </div>
-                {hasProgress && <span className="session-badge">Сессия сохранена</span>}
-              </div>
-
-              <div className="game-library-card__meta">
-                <span>Команд: {game.teams.length}</span>
-                {hasProgress && <span>Разыграно: {completed}</span>}
-                <span>Изменено: {formatDate(game.updatedAt)}</span>
-              </div>
-
-              <div className="game-library-card__actions game-library-card__actions--clean">
-                {finished ? (
-                  <button className="primary-button" onClick={() => gameLaunchRequested({ gameId: game.id, mode: 'continue' })}>Результаты</button>
-                ) : hasProgress ? (
-                  <button className="primary-button" onClick={() => gameLaunchRequested({ gameId: game.id, mode: 'continue' })}>▶ Продолжить</button>
-                ) : (
-                  <button className="primary-button" onClick={() => gameLaunchRequested({ gameId: game.id, mode: 'continue' })}>▶ Играть</button>
-                )}
-                <button className="secondary-button" onClick={() => openEditor(game.id)}>Редактировать</button>
-                <ActionMenu label={`Дополнительные действия для ${game.title || 'игры без названия'}`}>
-                  {hasProgress && <button onClick={() => gameLaunchRequested({ gameId: game.id, mode: 'fresh' })}>Начать заново</button>}
-                  <button disabled={busy !== null} onClick={() => void exportGame(game)}>{exporting ? 'Экспорт…' : 'Экспортировать игру'}</button>
-                  <button onClick={() => gameDuplicated(game.id)}>Дублировать</button>
-                  <button
-                    className="action-menu__danger"
-                    onClick={() => {
-                      if (window.confirm(`Удалить игру «${game.title}»? Песни из медиатеки останутся.`)) gameDeleted(game.id);
-                    }}
-                  >Удалить игру</button>
-                </ActionMenu>
-              </div>
-            </article>
-          );
-        })}
-      </section>
+        <section className="game-library-grid">
+          {sortedGames.map((game) => {
+            const session = sessions[game.id];
+            const progress = hasSessionProgress(session);
+            return (
+              <GameLibraryCard
+                key={game.id}
+                game={game}
+                session={session}
+                hasProgress={progress}
+                exporting={busy === `export:${game.id}`}
+                busy={busy !== null}
+                onOpenEditor={() => openEditor(game.id)}
+                onExport={() => void exportGame(game)}
+              />
+            );
+          })}
+        </section>
       )}
 
-      {pendingImport && (
-        <GameImportDialog
-          prepared={pendingImport.preview}
-          onCancel={() => setPendingImport(null)}
-          onImport={(mode) => void applyImport(mode)}
-        />
-      )}
+      {pendingImport && <GameImportDialog prepared={pendingImport.preview} onCancel={() => setPendingImport(null)} onImport={(mode) => void applyImport(mode)} />}
     </main>
   );
-}
-
-function GameImportDialog({
-  prepared,
-  onCancel,
-  onImport,
-}: {
-  prepared: PreparedGameImport;
-  onCancel: () => void;
-  onImport: (mode: GameConflictMode) => void;
-}) {
-  const game = prepared.package.game!;
-
-  return (
-    <Dialog
-      eyebrow="Проверка завершена"
-      title={`Импорт «${game.title}»`}
-      onClose={onCancel}
-      className="import-dialog"
-    >
-      <ImportVerificationSummary
-        title={`Игра «${game.title}» готова к импорту`}
-        stats={prepared.media.stats}
-        checks={[
-          'Архив не повреждён',
-          'Структура данных проверена',
-          'Все вложенные аудиофайлы доступны',
-        ]}
-      />
-
-      <p className="import-note">
-        Прогресс партии не переносится: после импорта игра начнётся с нулевыми баллами и всеми неразыгранными карточками.
-      </p>
-      {prepared.playabilityIssues.length > 0 && (
-        <p className="import-note import-note--warning">
-          Архив целостен, но игра требует настройки перед запуском: {prepared.playabilityIssues[0]}
-          {prepared.playabilityIssues.length > 1 ? ` Ещё замечаний: ${prepared.playabilityIssues.length - 1}.` : ''}
-        </p>
-      )}
-
-      {prepared.hasGameConflict ? (
-        <div className="import-conflict">
-          <strong>Эта же игра уже есть в библиотеке.</strong>
-          <p>Её постоянный идентификатор совпадает с архивом. Выберите, что сделать.</p>
-          <div className="import-dialog__actions">
-            <button className="primary-button" onClick={() => onImport('replace')}>Заменить существующую</button>
-            <button className="secondary-button" onClick={() => onImport('copy')}>Импортировать как копию</button>
-            <button className="text-button" onClick={onCancel}>Отмена</button>
-          </div>
-        </div>
-      ) : (
-        <div className="import-dialog__actions">
-          <button className="primary-button" onClick={() => onImport('copy')}>Импортировать игру</button>
-          <button className="secondary-button" onClick={onCancel}>Отмена</button>
-        </div>
-      )}
-    </Dialog>
-  );
-}
-
-function formatDate(timestamp: number) {
-  const date = new Date(timestamp);
-  if (!Number.isFinite(timestamp) || Number.isNaN(date.getTime())) return 'неизвестно';
-  try {
-    return new Intl.DateTimeFormat('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' }).format(date);
-  } catch {
-    return 'неизвестно';
-  }
 }

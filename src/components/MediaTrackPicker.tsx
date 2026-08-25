@@ -4,6 +4,7 @@ import { $mediaTracks, mediaTrackAdded } from '../model/game';
 import { createAudioAsset, createMediaTrack } from '../model/defaults';
 import { AUDIO_FILE_ACCEPT } from '../lib/audio';
 import { getErrorMessage } from '../lib/errors';
+import { useFeedback } from './feedback/FeedbackProvider';
 import { normalizeSearchText } from '../lib/search';
 import {
   PickerDialog,
@@ -26,6 +27,7 @@ export function MediaTrackPicker({
   onClose: () => void;
 }) {
   const tracks = useUnit($mediaTracks);
+  const { notify } = useFeedback();
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [visibleCount, setVisibleCount] = useState(PICKER_PAGE_SIZE);
@@ -51,7 +53,7 @@ export function MediaTrackPicker({
       mediaTrackAdded({ track, audioAsset });
       onSelect(track.id);
     } catch (error) {
-      window.alert(getErrorMessage(error, 'Не удалось добавить аудиотрек.'));
+      notify({ kind: 'error', title: 'Не удалось добавить аудиотрек', message: getErrorMessage(error, 'Проверьте файл и попробуйте ещё раз.') });
     } finally {
       setBusy(false);
       if (inputRef.current) inputRef.current.value = '';

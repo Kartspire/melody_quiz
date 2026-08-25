@@ -31,7 +31,9 @@ describe('media library identity', () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    expect(areSongsEquivalent(base, { ...base, id: 'song-b', artist: ' кино ', title: 'ГРУППА   КРОВИ' })).toBe(true);
-    expect(areSongsEquivalent(base, { ...base, id: 'song-b', minusTrackId: 'minus-b' })).toBe(false);
+    const equivalent: Song = { ...base, id: 'song-b', artist: ' кино ', title: 'ГРУППА   КРОВИ' };
+    const differentTrack: Song = { ...base, id: 'song-b', minusTrackId: 'minus-b' };
+    expect(areSongsEquivalent(base, equivalent)).toBe(true);
+    expect(areSongsEquivalent(base, differentTrack)).toBe(false);
   });
 });

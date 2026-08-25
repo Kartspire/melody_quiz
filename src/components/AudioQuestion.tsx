@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
 import type { PlayableQuestion, Team } from '../model/types';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import { AudioTimeline } from './AudioTimeline';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
 
 export function AudioQuestion({
   question,
@@ -32,61 +32,21 @@ export function AudioQuestion({
   onBack: () => void;
   onClose: () => void;
 }) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const plusMode = answerRevealed;
   const asset = plusMode ? question.plus : question.minus;
   const awardedTeam = teams.find((team) => team.id === awardedTeamId);
   const invalidAsset = Boolean(asset && !(asset.blob instanceof Blob));
   const source = useObjectUrl(invalidAsset ? undefined : asset?.blob);
+  const player = useAudioPlayer({
+    source,
+    autoPlay: Boolean(source),
+    playErrorMessage: 'Не удалось запустить аудио. Проверьте формат файла или загрузите трек заново.',
+    mediaErrorMessage: 'Браузер не смог прочитать этот аудиофайл. Попробуйте MP3, WAV или OGG.',
+  });
+  const playbackError = invalidAsset
+    ? 'Аудиофайл повреждён. Загрузите его заново в настройках.'
+    : player.error;
 
-  useEffect(() => {
-    setPlaying(false);
-    setProgress(0);
-    setDuration(0);
-    setPlaybackError(invalidAsset ? 'Аудиофайл повреждён. Загрузите его заново в настройках.' : null);
-  }, [asset, invalidAsset]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !source) return;
-
-    audio.currentTime = 0;
-    audio.load();
-
-    void audio
-      .play()
-      .then(() => {
-        setPlaying(true);
-        setPlaybackError(null);
-      })
-      .catch(() => {
-        setPlaying(false);
-      });
-  }, [source]);
-
-  const togglePlayback = async () => {
-    const audio = audioRef.current;
-    if (!audio || !source) return;
-
-    if (audio.paused) {
-      try {
-        await audio.play();
-        setPlaying(true);
-        setPlaybackError(null);
-      } catch (error) {
-        console.error('Audio playback failed', error);
-        setPlaying(false);
-        setPlaybackError('Не удалось запустить аудио. Проверьте формат файла или загрузите трек заново.');
-      }
-    } else {
-      audio.pause();
-      setPlaying(false);
-    }
-  };
 
   return (
     <main className="question-screen page-shell">
@@ -113,38 +73,19 @@ export function AudioQuestion({
 
         {source && (
           <>
-            <audio
-              ref={audioRef}
-              src={source}
-              preload="auto"
-              onPlay={() => {
-                setPlaying(true);
-                setPlaybackError(null);
-              }}
-              onPause={() => setPlaying(false)}
-              onEnded={() => setPlaying(false)}
-              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-              onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
-              onError={() => {
-                setPlaying(false);
-                setPlaybackError('Браузер не смог прочитать этот аудиофайл. Попробуйте MP3, WAV или OGG.');
-              }}
-            />
+            <audio ref={player.audioRef} src={source} preload="auto" />
             <div className="player-controls">
               <button
                 className="play-button"
-                onClick={() => void togglePlayback()}
-                aria-label={playing ? 'Пауза' : 'Запустить песню'}
+                onClick={() => void player.toggle()}
+                aria-label={player.playing ? 'Пауза' : 'Запустить песню'}
               >
-                {playing ? 'Ⅱ' : '▶'}
+                {player.playing ? 'Ⅱ' : '▶'}
               </button>
               <AudioTimeline
-                progress={progress}
-                duration={duration}
-                onSeek={(time) => {
-                  if (audioRef.current) audioRef.current.currentTime = time;
-                  setProgress(time);
-                }}
+                progress={player.currentTime}
+                duration={player.duration}
+                onSeek={player.seek}
               />
             </div>
           </>
@@ -179,7 +120,7 @@ export function AudioQuestion({
                     className="answer-button answer-button--correct"
                     disabled={cannotAnswer}
                     onClick={() => {
-                      audioRef.current?.pause();
+                      player.pause();
                       onAward(team.id);
                     }}
                   >
@@ -190,7 +131,7 @@ export function AudioQuestion({
                     className={answeredIncorrectly ? 'answer-button answer-button--wrong answer-button--active' : 'answer-button answer-button--wrong'}
                     disabled={cannotAnswer}
                     onClick={() => {
-                      audioRef.current?.pause();
+                      player.pause();
                       onIncorrect(team.id);
                     }}
                   >
@@ -205,7 +146,7 @@ export function AudioQuestion({
             <button
               className="secondary-button nobody-button"
               onClick={() => {
-                audioRef.current?.pause();
+                player.pause();
                 onNobodyGuessed();
               }}
             >

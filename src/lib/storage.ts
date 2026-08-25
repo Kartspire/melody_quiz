@@ -4,6 +4,7 @@ import { reconcileSession } from '../model/session';
 import { normalizeGameConfig } from '../model/migrations';
 import { assertValidPersistedState } from '../model/validation';
 import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, MediaTrack, PersistedState, Song } from '../model/types';
+import { createSerializedSaveQueue } from './storageQueue';
 
 const DB_NAME = 'melody-quiz-db';
 const DB_VERSION = 5;
@@ -21,8 +22,6 @@ const REVISION_KEY = 'state-revision';
 
 let knownRevision = 0;
 let lastSavedState: PersistedState | null = null;
-let saveQueue: Promise<void> = Promise.resolve();
-
 
 const TAB_ID = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 const externalChangeListeners = new Set<(revision: number) => void>();
@@ -149,12 +148,9 @@ export const loadState = async (): Promise<PersistedState> => {
   }
 };
 
-export const saveState = (state: PersistedState): Promise<void> => {
-  const snapshot = state;
-  const task = saveQueue.then(() => saveStateInternal(snapshot));
-  saveQueue = task.catch(() => undefined);
-  return task;
-};
+const enqueueSave = createSerializedSaveQueue<PersistedState>(saveStateInternal);
+
+export const saveState = (state: PersistedState): Promise<void> => enqueueSave(state);
 
 async function saveStateInternal(state: PersistedState): Promise<void> {
   assertValidPersistedState(state);

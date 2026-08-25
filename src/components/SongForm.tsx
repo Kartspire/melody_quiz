@@ -6,6 +6,7 @@ import { $mediaTracks, songAdded } from '../model/game';
 import type { AudioAsset, MediaTrack } from '../model/types';
 import { AUDIO_FILE_ACCEPT } from '../lib/audio';
 import { getErrorMessage } from '../lib/errors';
+import { MediaTrackPicker } from './MediaTrackPicker';
 
 export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?: (songId: string) => void; onCancel?: () => void; compact?: boolean }) {
   const mediaTracks = useUnit($mediaTracks);
@@ -113,13 +114,35 @@ function TrackField({
   onTrackChange: (trackId: string) => void;
   onFileChange: (file?: File) => void;
 }) {
+  const [pickerOpened, setPickerOpened] = useState(false);
+  const selectedTrack = tracks.find((track) => track.id === selectedTrackId);
+
   return (
     <div className="audio-upload song-track-picker">
       <span>{label}</span>
-      <select value={selectedTrackId} disabled={Boolean(file)} onChange={(event) => onTrackChange(event.target.value)}>
-        <option value="">Не выбран из аудио</option>
-        {tracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
-      </select>
+      <button
+        type="button"
+        className={selectedTrack ? 'selected-song-button song-form-track-button' : 'select-song-button song-form-track-button'}
+        disabled={Boolean(file)}
+        onClick={() => setPickerOpened(true)}
+      >
+        {selectedTrack ? (
+          <><strong>{selectedTrack.name}</strong><small>Из общей медиатеки</small></>
+        ) : 'Выбрать из медиатеки'}
+      </button>
+      {selectedTrack && !file && (
+        <button type="button" className="text-button song-form-track-clear" onClick={() => onTrackChange('')}>Убрать выбранный трек</button>
+      )}
+      {pickerOpened && (
+        <MediaTrackPicker
+          currentTrackId={selectedTrackId || undefined}
+          onClose={() => setPickerOpened(false)}
+          onSelect={(trackId) => {
+            onTrackChange(trackId ?? '');
+            setPickerOpened(false);
+          }}
+        />
+      )}
       <label className={file ? 'file-picker file-picker--ready' : 'file-picker'}>
         <input
           type="file"
@@ -132,7 +155,7 @@ function TrackField({
         <span className="file-picker__title">{file ? '✓ Новый файл выбран' : 'Или загрузить новый файл'}</span>
         <small title={file?.name}>{file?.name ?? 'MP3, WAV, OGG, FLAC, M4A…'}</small>
       </label>
-      {file && <button className="remove-file" onClick={() => onFileChange(undefined)}>Убрать файл</button>}
+      {file && <button type="button" className="remove-file" onClick={() => onFileChange(undefined)}>Убрать файл</button>}
     </div>
   );
 }

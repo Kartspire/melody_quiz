@@ -23,7 +23,7 @@ describe('stored ZIP', () => {
     const zip = await createStoredZip([{ name: 'a.txt', data: new Blob(['alpha']) }]);
     const bytes = new Uint8Array(await zip.arrayBuffer());
     const centralSignature = [0x50, 0x4b, 0x01, 0x02];
-    const index = bytes.findIndex((value, offset) => centralSignature.every((part, i) => bytes[offset + i] === part));
+    const index = bytes.findIndex((_value, offset) => centralSignature.every((part, i) => bytes[offset + i] === part));
     expect(index).toBeGreaterThanOrEqual(0);
     bytes[index] = 0;
     await expect(readStoredZip(new Blob([bytes]))).rejects.toThrow(/централь/i);

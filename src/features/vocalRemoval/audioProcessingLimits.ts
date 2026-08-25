@@ -55,4 +55,3 @@ function assertFiniteDuration(duration: number) {
 function formatMegabytes(bytes: number) {
   return `${Math.round(bytes / MEBIBYTE)} МБ`;
 }
-

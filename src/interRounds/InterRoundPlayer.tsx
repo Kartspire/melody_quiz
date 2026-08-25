@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $activeInterRound,
@@ -15,6 +15,7 @@ import {
 import type { AudioAsset } from '../model/types';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import { AudioTimeline } from '../components/AudioTimeline';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
 import { getInterRoundTemplate } from './templates';
 
 export function InterRoundPlayer() {
@@ -120,99 +121,29 @@ function ContinueLyricsPlayer({
   onNext: () => void;
   last: boolean;
 }) {
-  const audioRef = useRef<HTMLAudioElement>(null);
-  const cutFrameRef = useRef<number | null>(null);
   const source = useObjectUrl(asset?.blob);
-  const [playing, setPlaying] = useState(false);
-  const [cutReached, setCutReached] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-
-  const stopCutMonitor = () => {
-    if (cutFrameRef.current !== null) cancelAnimationFrame(cutFrameRef.current);
-    cutFrameRef.current = null;
-  };
-
-  const startCutMonitor = () => {
-    stopCutMonitor();
-    const check = () => {
-      const audio = audioRef.current;
-      if (!audio || phase !== 'play' || audio.paused) {
-        cutFrameRef.current = null;
-        return;
-      }
-      if (audio.currentTime * 1000 >= cutAtMs) {
-        audio.pause();
-        try { audio.currentTime = cutAtMs / 1000; } catch { /* ignore seek errors */ }
-        setPlaying(false);
-        setProgress(cutAtMs / 1000);
-        setCutReached(true);
-        cutFrameRef.current = null;
-        return;
-      }
-      cutFrameRef.current = requestAnimationFrame(check);
-    };
-    cutFrameRef.current = requestAnimationFrame(check);
-  };
+  const cutAtSeconds = cutAtMs / 1000;
+  const [cutReached, setCutReached] = useState(phase === 'answer');
+  const player = useAudioPlayer({
+    source,
+    autoPlay: phase === 'answer' && Boolean(source),
+    startAt: 0,
+    stopAt: phase === 'play' ? cutAtSeconds : undefined,
+    resetOnRangeChange: true,
+    rangeEndBehavior: 'pause',
+    onRangeEnd: () => setCutReached(true),
+    playErrorMessage: 'Не удалось запустить аудио межраунда.',
+    mediaErrorMessage: 'Браузер не смог прочитать аудиофайл межраунда.',
+  });
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !source) return;
-    let cancelled = false;
-    const startAt = 0;
-    audio.pause();
-    audio.src = source;
-    audio.load();
-    setPlaying(false);
-    setProgress(0);
-    setDuration(0);
     setCutReached(phase === 'answer');
-
-    const prepare = () => {
-      if (cancelled) return;
-      const safeStart = Number.isFinite(audio.duration) ? Math.min(startAt, Math.max(0, audio.duration - 0.01)) : startAt;
-      try {
-        audio.currentTime = Math.max(0, safeStart);
-        setProgress(Math.max(0, safeStart));
-      } catch { /* metadata may still be unavailable in exotic browsers */ }
-      if (phase === 'answer') {
-        void audio.play().catch(() => setPlaying(false));
-      }
-    };
-
-    if (audio.readyState >= 1) prepare();
-    else audio.addEventListener('loadedmetadata', prepare, { once: true });
-    return () => {
-      cancelled = true;
-      stopCutMonitor();
-      audio.removeEventListener('loadedmetadata', prepare);
-    };
-  }, [source, phase, cutAtMs]);
-
-  const toggle = async () => {
-    const audio = audioRef.current;
-    if (!audio || !source) return;
-    if (audio.paused) {
-      if (phase === 'play' && audio.currentTime >= cutAtMs / 1000) audio.currentTime = 0;
-      if (phase === 'answer' && Number.isFinite(audio.duration) && audio.currentTime >= audio.duration - 0.05) audio.currentTime = 0;
-      try {
-        await audio.play();
-        setPlaying(true);
-        if (phase === 'play') startCutMonitor();
-      } catch (error) {
-        console.error('Inter-round audio playback failed', error);
-        setPlaying(false);
-      }
-    } else {
-      audio.pause();
-      stopCutMonitor();
-      setPlaying(false);
-    }
-  };
+  }, [phase, cutAtMs, asset?.id]);
 
   return (
     <main className="inter-round-screen page-shell">
       <GameBackButton onBack={onBack} />
+      <audio ref={player.audioRef} src={source ?? undefined} preload="auto" />
       <div className="inter-round-play-heading">
         <div><span className="eyebrow">{title}</span><h1>{phase === 'answer' ? 'Правильный ответ' : `Задание ${taskNumber} из ${totalTasks}`}</h1></div>
         <span className="inter-round-counter">{taskNumber}/{totalTasks}</span>
@@ -222,30 +153,16 @@ function ContinueLyricsPlayer({
           <div className="lyrics-word-count"><strong>{requiredWordsCount}</strong><span>{wordLabel(requiredWordsCount)}</span></div>
           <p>После остановки трека запишите следующие {requiredWordsCount} {wordLabel(requiredWordsCount).toLowerCase()}.</p>
           <div className="inter-round-track-name">Аудиофрагмент</div>
-          <button className="primary-button" disabled={!source} onClick={() => void toggle()}>{playing ? 'Пауза' : cutReached ? 'Проиграть фрагмент заново' : '▶ Запустить фрагмент'}</button>
-          <audio
-            ref={audioRef}
-            onPlay={() => { setPlaying(true); startCutMonitor(); }}
-            onPause={() => { stopCutMonitor(); setPlaying(false); }}
-            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-            onDurationChange={(event) => setDuration(event.currentTarget.duration)}
-            onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
-            onEnded={(event) => {
-              stopCutMonitor();
-              setPlaying(false);
-              setProgress(Math.min(event.currentTarget.duration || 0, cutAtMs / 1000));
-              setCutReached(true);
-            }}
-          />
+          <button className="primary-button" disabled={!source} onClick={() => void player.toggle()}>{player.playing ? 'Пауза' : cutReached ? 'Проиграть фрагмент заново' : '▶ Запустить фрагмент'}</button>
+          {player.error && <p className="audio-playback-error" role="alert">{player.error}</p>}
           {source && (
             <AudioTimeline
               className="inter-round-audio-timeline"
-              progress={Math.min(progress, cutAtMs / 1000)}
-              duration={duration ? Math.min(duration, cutAtMs / 1000) : 0}
+              progress={Math.min(player.currentTime, cutAtSeconds)}
+              duration={player.duration ? Math.min(player.duration, cutAtSeconds) : 0}
               onSeek={(time) => {
-                if (audioRef.current) audioRef.current.currentTime = time;
-                setProgress(time);
-                if (time >= cutAtMs / 1000 - 0.05) setCutReached(true);
+                player.seek(time);
+                if (time >= cutAtSeconds - 0.05) setCutReached(true);
               }}
             />
           )}
@@ -257,28 +174,14 @@ function ContinueLyricsPlayer({
           <span className="eyebrow">Нужно было написать</span>
           <blockquote>{answerText}</blockquote>
           <div className="inter-round-track-name">Полный исходный трек</div>
-          <button className="primary-button" disabled={!source} onClick={() => void toggle()}>{playing ? 'Пауза' : '▶ Включить полный трек'}</button>
-          <audio
-            ref={audioRef}
-            onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
-            onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-            onDurationChange={(event) => setDuration(event.currentTarget.duration)}
-            onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
-            onEnded={(event) => {
-              setPlaying(false);
-              setProgress(event.currentTarget.duration || 0);
-            }}
-          />
+          <button className="primary-button" disabled={!source} onClick={() => void player.toggle()}>{player.playing ? 'Пауза' : '▶ Включить полный трек'}</button>
+          {player.error && <p className="audio-playback-error" role="alert">{player.error}</p>}
           {source && (
             <AudioTimeline
               className="inter-round-audio-timeline"
-              progress={progress}
-              duration={duration}
-              onSeek={(time) => {
-                if (audioRef.current) audioRef.current.currentTime = time;
-                setProgress(time);
-              }}
+              progress={player.currentTime}
+              duration={player.duration}
+              onSeek={player.seek}
             />
           )}
           <button className="secondary-button inter-round-next-button" onClick={onNext}>{last ? 'Завершить межраунд →' : 'Следующее задание →'}</button>
@@ -317,46 +220,18 @@ function CommonThemePlayer({
 }) {
   const playingComplete = playbackIndex >= tracks.length;
   const currentIndex = Math.min(Math.max(playbackIndex, 0), tracks.length - 1);
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const audioRef = useRef<HTMLAudioElement>(null);
   const current = tracks[currentIndex];
   const source = useObjectUrl(current?.asset?.blob);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio || !source || phase !== 'play' || playingComplete) return;
-    audio.pause();
-    audio.src = source;
-    audio.currentTime = 0;
-    audio.load();
-    setPlaying(false);
-    setProgress(0);
-    setDuration(0);
-  }, [source, currentIndex, phase, playingComplete]);
-
-  const play = async () => {
-    const audio = audioRef.current;
-    if (!audio || !source || playingComplete) return;
-    if (!audio.paused) {
-      audio.pause();
-      setPlaying(false);
-      return;
-    }
-    try {
-      await audio.play();
-      setPlaying(true);
-    } catch (error) {
-      console.error('Inter-round audio playback failed', error);
-      setPlaying(false);
-    }
-  };
+  const activeSource = phase === 'play' && !playingComplete ? source : null;
+  const player = useAudioPlayer({
+    source: activeSource,
+    onEnded: onAdvance,
+    playErrorMessage: 'Не удалось запустить трек межраунда.',
+    mediaErrorMessage: 'Браузер не смог прочитать трек межраунда.',
+  });
 
   const advance = () => {
-    const audio = audioRef.current;
-    audio?.pause();
-    setPlaying(false);
+    player.pause();
     onAdvance();
   };
 
@@ -380,9 +255,10 @@ function CommonThemePlayer({
   return (
     <main className="inter-round-screen page-shell">
       <GameBackButton onBack={onBack} />
+      <audio ref={player.audioRef} src={activeSource ?? undefined} preload="auto" />
       <div className="inter-round-play-heading">
         <div><span className="eyebrow">Межраунд · Этап {stageNumber} из {totalStages}</span><h1>{title}</h1></div>
-        <span className="inter-round-counter">{playingComplete ? '4/4' : `${currentIndex + 1}/4`}</span>
+        <span className="inter-round-counter">{playingComplete ? `${tracks.length}/${tracks.length}` : `${currentIndex + 1}/${tracks.length}`}</span>
       </div>
       <section className="common-theme-player-card">
         <div className="four-track-progress">
@@ -400,29 +276,18 @@ function CommonThemePlayer({
           <>
             <h2>Трек {currentIndex + 1}</h2>
             <p>Запишите название и исполнителя. После четырёх треков определите общую тему.</p>
-            <button className="primary-button" disabled={!source} onClick={() => void play()}>{playing ? 'Пауза' : '▶ Включить трек'}</button>
-            <audio
-              ref={audioRef}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-              onDurationChange={(event) => setDuration(event.currentTarget.duration)}
-              onTimeUpdate={(event) => setProgress(event.currentTarget.currentTime)}
-              onEnded={advance}
-            />
-            {source && (
+            <button className="primary-button" disabled={!activeSource} onClick={() => void player.toggle()}>{player.playing ? 'Пауза' : '▶ Включить трек'}</button>
+            {player.error && <p className="audio-playback-error" role="alert">{player.error}</p>}
+            {activeSource && (
               <AudioTimeline
                 className="inter-round-audio-timeline"
-                progress={progress}
-                duration={duration}
-                onSeek={(time) => {
-                  if (audioRef.current) audioRef.current.currentTime = time;
-                  setProgress(time);
-                }}
+                progress={player.currentTime}
+                duration={player.duration}
+                onSeek={player.seek}
               />
             )}
             <div className="inter-round-inline-actions">
-              <button className="secondary-button" onClick={advance}>{currentIndex < 3 ? 'Следующий трек →' : 'Закончить прослушивание →'}</button>
+              <button className="secondary-button" onClick={advance}>{currentIndex < tracks.length - 1 ? 'Следующий трек →' : 'Закончить прослушивание →'}</button>
             </div>
           </>
         )}

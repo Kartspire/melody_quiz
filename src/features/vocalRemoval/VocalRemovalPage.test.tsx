@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { act } from 'react';
+import { act, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { createInstrumentalMock, createTrimmedWavMock, addGeneratedTrackToLibraryMock } = vi.hoisted(() => ({
   createInstrumentalMock: vi.fn(async () => new Blob(['minus'], { type: 'audio/wav' })),
   createTrimmedWavMock: vi.fn(async () => new Blob(['trimmed'], { type: 'audio/wav' })),
-  addGeneratedTrackToLibraryMock: vi.fn(async () => ({
+  addGeneratedTrackToLibraryMock: vi.fn(async (_blob: Blob, _fileName: string) => ({
     track: { id: 'track-added' },
     status: 'created' as 'created' | 'existing',
   })),
@@ -37,6 +37,7 @@ vi.mock('./separator', () => ({
   releaseVocalSeparator: vi.fn(async () => undefined),
 }));
 
+import { FeedbackProvider } from '../../components/feedback/FeedbackProvider';
 import { VocalRemovalPage } from './VocalRemovalPage';
 
 let container: HTMLDivElement;
@@ -210,10 +211,10 @@ describe('VocalRemovalPage', () => {
     expect(container.textContent).toContain('Фрагмент готов');
 
     await act(async () => {
-      root.render(<VocalRemovalPage active={false} />);
+      root.render(withFeedback(<VocalRemovalPage active={false} />));
     });
     await act(async () => {
-      root.render(<VocalRemovalPage active />);
+      root.render(withFeedback(<VocalRemovalPage active />));
     });
 
     expect(container.textContent).toContain('song.mp3');
@@ -229,7 +230,7 @@ describe('VocalRemovalPage', () => {
       await Promise.resolve();
     });
 
-    const toast = container.querySelector('.vocal-media-toast');
+    const toast = container.querySelector('.app-toast');
     expect(toast).not.toBeNull();
     expect(toast?.textContent).toContain('Оригинал добавлен в медиатеку');
   });
@@ -258,9 +259,13 @@ describe('VocalRemovalPage', () => {
   });
 });
 
+function withFeedback(node: ReactNode) {
+  return <FeedbackProvider>{node}</FeedbackProvider>;
+}
+
 async function renderWithFile() {
   await act(async () => {
-    root.render(<VocalRemovalPage />);
+    root.render(withFeedback(<VocalRemovalPage />));
   });
 
   const input = container.querySelector<HTMLInputElement>('input[type="file"]');
