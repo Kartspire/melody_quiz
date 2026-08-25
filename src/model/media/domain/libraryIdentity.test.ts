@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MediaTrack, Song } from '../../types';
-import { areSongsEquivalent, findEquivalentMediaTrack, normalizeMediaIdentityText } from './libraryIdentity';
+import { areSongsEquivalent, findEquivalentMediaTrack, mediaTrackNameFromFileName, normalizeMediaIdentityText } from './libraryIdentity';
 
 const track: MediaTrack = {
   id: 'track-a',
@@ -11,6 +11,11 @@ const track: MediaTrack = {
 };
 
 describe('media library identity', () => {
+  it('uses a file name without its audio extension as the automatic track name', () => {
+    expect(mediaTrackNameFromFileName('song.mp3')).toBe('song');
+    expect(mediaTrackNameFromFileName('final.version.flac')).toBe('final.version');
+  });
+
   it('normalizes user-facing text consistently', () => {
     expect(normalizeMediaIdentityText('  КИНО   -  Группа крови ')).toBe('кино - группа крови');
   });

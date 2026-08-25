@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { createAudioAsset, createMediaTrack } from '../../model/defaults';
 import { songTrackChanged } from '../../model/game';
 import type { AudioAsset, MediaTrack } from '../../model/types';
+import { mediaTrackNameFromFileName } from '../../model/media/domain/libraryIdentity';
 import { AUDIO_FILE_ACCEPT } from '../../lib/audio';
 import { getErrorMessage } from '../../lib/errors';
 import { MediaTrackPicker } from '../MediaTrackPicker';
@@ -34,7 +35,7 @@ export function StoredTrackField({ songId, kind, label, suggestedName, track, as
     setBusy(true);
     try {
       const nextAsset = await createAudioAsset(file);
-      const nextTrack = createMediaTrack(nextAsset, suggestedName || file.name);
+      const nextTrack = createMediaTrack(nextAsset, suggestedName || mediaTrackNameFromFileName(file.name));
       songTrackChanged({ songId, kind, track: nextTrack, audioAsset: nextAsset });
       notify({ kind: 'success', message: `${label} обновлён.` });
     } catch (error) {

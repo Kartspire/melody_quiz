@@ -4,6 +4,7 @@ import { $mediaTracks, mediaTrackAdded } from '../model/game';
 import { createAudioAsset, createMediaTrack } from '../model/defaults';
 import { AUDIO_FILE_ACCEPT } from '../lib/audio';
 import { getErrorMessage } from '../lib/errors';
+import { mediaTrackNameFromFileName } from '../model/media/domain/libraryIdentity';
 import { useFeedback } from './feedback/FeedbackProvider';
 import { normalizeSearchText } from '../lib/search';
 import {
@@ -49,7 +50,7 @@ export function MediaTrackPicker({
     try {
       setBusy(true);
       const audioAsset = await createAudioAsset(file);
-      const track = createMediaTrack(audioAsset, file.name.replace(/\.[^.]+$/, ''));
+      const track = createMediaTrack(audioAsset, mediaTrackNameFromFileName(file.name));
       mediaTrackAdded({ track, audioAsset });
       onSelect(track.id);
     } catch (error) {

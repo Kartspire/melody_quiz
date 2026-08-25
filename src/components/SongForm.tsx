@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { createAudioAsset, createMediaTrack, createSong } from '../model/defaults';
 import { DATA_LIMITS } from '../model/limits';
+import { mediaTrackNameFromFileName } from '../model/media/domain/libraryIdentity';
 import { $mediaTracks, songAdded } from '../model/game';
 import type { AudioAsset, MediaTrack } from '../model/types';
 import { AUDIO_FILE_ACCEPT } from '../lib/audio';
@@ -34,7 +35,7 @@ export function SongForm({ onCreated, onCancel, compact = false }: { onCreated?:
           const asset = await createAudioAsset(file);
           const role = kind === 'minus' ? 'минус' : 'плюс';
           const label = [artist.trim(), title.trim()].filter(Boolean).join(' — ');
-          const track = createMediaTrack(asset, label ? `${label} (${role})` : file.name);
+          const track = createMediaTrack(asset, label ? `${label} (${role})` : mediaTrackNameFromFileName(file.name));
           newAssets.push(asset);
           newTracks.push(track);
           return track;
