@@ -115,6 +115,12 @@ export function GameBoard() {
     (sum, category) => sum + category.questions.filter((question) => session.completedQuestionIds.includes(question.id)).length,
     0,
   );
+  const nextStage = config.stages[session.stageIndex + 1];
+  const nextStageLabel = nextStage?.kind === 'interRound'
+    ? 'Перейти к межраунду →'
+    : nextStage?.kind === 'round'
+      ? 'Перейти к следующему раунду →'
+      : 'Завершить игру →';
 
   return (
     <main className="game-page page-shell">
@@ -128,9 +134,16 @@ export function GameBoard() {
           <span className="eyebrow">Раунд {roundOrdinal} из {config.rounds.length}</span>
           <h1>{round.name}</h1>
         </div>
-        <div className="round-progress">
-          <span>{completedCount} / {questionsCount}</span>
-          <div className="progress-track"><span style={{ width: `${questionsCount ? (completedCount / questionsCount) * 100 : 0}%` }} /></div>
+        <div className="game-round-heading__actions">
+          <div className="round-progress">
+            <span>{completedCount} / {questionsCount}</span>
+            <div className="progress-track"><span style={{ width: `${questionsCount ? (completedCount / questionsCount) * 100 : 0}%` }} /></div>
+          </div>
+          {completedCount < questionsCount && (
+            <button className="secondary-button round-skip-button" onClick={() => nextStageRequested()}>
+              {nextStageLabel}
+            </button>
+          )}
         </div>
       </div>
 
@@ -162,7 +175,7 @@ export function GameBoard() {
         <div className="empty-state">
           <h2>Раунд завершён</h2>
           <p>Все вопросы этого раунда уже разыграны.</p>
-          <button className="primary-button" onClick={() => nextStageRequested()}>Перейти к следующему этапу →</button>
+          <button className="primary-button" onClick={() => nextStageRequested()}>{nextStageLabel}</button>
         </div>
       ) : (
         <div className="quiz-board">

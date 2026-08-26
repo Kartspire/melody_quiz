@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
+  $audioAssets,
   $mediaTracks,
   commonThemeChanged,
   commonThemeStageAdded,
@@ -13,16 +14,20 @@ import {
   interRoundTitleChanged,
 } from '../model/game';
 import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from '../model/limits';
-import type { InterRound } from '../model/types';
+import type { AudioAsset, InterRound } from '../model/types';
 import { DraftNumberInput } from '../components/DraftNumberInput';
 import { MediaTrackPicker } from '../components/MediaTrackPicker';
 import { useFeedback } from '../components/feedback/FeedbackProvider';
+import { AudioTimeline } from '../components/AudioTimeline';
+import { useAudioPlayer } from '../hooks/useAudioPlayer';
+import { useObjectUrl } from '../hooks/useObjectUrl';
 import { getInterRoundTemplate } from './templates';
 
 export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
-  const mediaTracks = useUnit($mediaTracks);
+  const [mediaTracks, audioAssets] = useUnit([$mediaTracks, $audioAssets]);
   const { confirm } = useFeedback();
   const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
+  const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
   const [picker, setPicker] = useState<{ currentTrackId?: string; onSelect: (trackId?: string) => void } | null>(null);
   const template = getInterRoundTemplate(interRound.templateId);
 
@@ -57,6 +62,7 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
         <div className="inter-round-task-list">
           {interRound.tasks.map((task, index) => {
             const track = task.trackId ? trackById.get(task.trackId) : undefined;
+            const asset = track ? audioById.get(track.audioId) : undefined;
             return (
               <article className="inter-round-task-card" key={task.id}>
                 <div className="inter-round-task-card__header">
@@ -89,8 +95,10 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
                   <label className="field compact-field">
                     <span>Момент остановки</span>
                     <DraftSecondsInput valueMs={task.cutAtMs} onCommit={(cutAtMs) => continueLyricsTaskChanged({ interRoundId: interRound.id, taskId: task.id, patch: { cutAtMs } })} />
+                    <small className="field-hint">Можно дробно, например 12,5 сек</small>
                   </label>
                 </div>
+                <ContinueLyricsFragmentPreview asset={asset} cutAtMs={task.cutAtMs} />
                 <label className="field">
                   <span>Правильное продолжение текста</span>
                   <textarea
@@ -194,8 +202,61 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
 }
 
 
+
+function ContinueLyricsFragmentPreview({ asset, cutAtMs }: { asset?: AudioAsset; cutAtMs: number }) {
+  const source = useObjectUrl(asset?.blob);
+  const cutAtSeconds = cutAtMs / 1000;
+  const player = useAudioPlayer({
+    source,
+    startAt: 0,
+    stopAt: cutAtSeconds,
+    resetOnRangeChange: true,
+    rangeEndBehavior: 'reset',
+    playErrorMessage: 'Не удалось воспроизвести фрагмент межраунда.',
+    mediaErrorMessage: 'Браузер не смог прочитать аудиофайл межраунда.',
+  });
+  const visibleDuration = player.duration > 0 ? Math.min(player.duration, cutAtSeconds) : cutAtSeconds;
+
+  return (
+    <div className="continue-lyrics-preview">
+      <div className="continue-lyrics-preview__heading">
+        <div>
+          <span className="eyebrow">Предпрослушивание</span>
+          <strong>От начала трека до {formatSeconds(cutAtMs)} сек</strong>
+        </div>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={!source}
+          onClick={() => void player.toggle()}
+        >
+          {player.playing ? 'Пауза' : '▶ Прослушать фрагмент'}
+        </button>
+      </div>
+      {source ? (
+        <>
+          <audio ref={player.audioRef} src={source} preload="metadata" />
+          <AudioTimeline
+            className="continue-lyrics-preview__timeline"
+            progress={Math.min(player.currentTime, visibleDuration)}
+            duration={visibleDuration}
+            onSeek={(time) => player.seek(Math.min(time, visibleDuration))}
+          />
+          {player.error && <p className="audio-playback-error" role="alert">{player.error}</p>}
+        </>
+      ) : (
+        <p className="continue-lyrics-preview__empty">Выберите аудиотрек, чтобы проверить игровой фрагмент.</p>
+      )}
+    </div>
+  );
+}
+
+function formatSeconds(valueMs: number) {
+  return String(Math.round(valueMs) / 1000).replace('.', ',');
+}
+
 function DraftSecondsInput({ valueMs, onCommit }: { valueMs: number; onCommit: (valueMs: number) => void }) {
-  const format = (value: number) => String(Math.round(value) / 1000).replace('.', ',');
+  const format = formatSeconds;
   const [draft, setDraft] = useState(format(valueMs));
   const [focused, setFocused] = useState(false);
   const skipNextBlurCommit = useRef(false);

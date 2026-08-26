@@ -70,6 +70,37 @@ describe('transitionGameSession', () => {
   });
 
 
+
+  it('can advance from an unfinished round and keeps skipped questions available through Back', () => {
+    const game = createGame('Skip unfinished round');
+    const secondRound = createRound(1);
+    game.rounds.push(secondRound);
+    game.stages.push(createRoundStage(secondRound.id));
+
+    const teamId = game.teams[0].id;
+    const firstQuestionId = game.rounds[0].categories[0].questions[0].id;
+    let session = createSession(game);
+    session = {
+      ...session,
+      started: true,
+      nextExcludedTeamIds: [teamId],
+    };
+
+    session = transitionGameSession(game, session, { type: 'nextStage' }, NOW);
+
+    expect(session.stageIndex).toBe(1);
+    expect(session.completedQuestionIds).not.toContain(firstQuestionId);
+    expect(session.activeExcludedTeamIds).toEqual([]);
+    expect(session.currentIncorrectTeamIds).toEqual([]);
+    expect(session.nextExcludedTeamIds).toEqual([]);
+
+    session = transitionGameSession(game, session, { type: 'previousStage' }, NOW);
+
+    expect(session.stageIndex).toBe(0);
+    expect(session.completedQuestionIds).not.toContain(firstQuestionId);
+    expect(session.nextExcludedTeamIds).toEqual([teamId]);
+  });
+
   it('clears all team penalties when an inter-round starts', () => {
     const game = createGame('Inter-round boundary');
     const interRound = createContinueLyricsInterRound();

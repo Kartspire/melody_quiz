@@ -2,7 +2,6 @@ import {
   findQuestion,
   getActiveStage,
   getRoundForStage,
-  isRoundComplete,
 } from '../../session';
 import type { GameConfig, GameSession } from '../../types';
 import {
@@ -190,7 +189,7 @@ export function transitionGameSession(
     case 'nextStage': {
       if (session.stageIndex >= game.stages.length) return session;
       const stage = getActiveStage(game, session);
-      if (stage?.kind !== 'round' || !isRoundComplete(game, session)) return session;
+      if (stage?.kind !== 'round') return session;
 
       const nextStageIndex = Math.min(session.stageIndex + 1, game.stages.length);
       return withSessionCheckpoint(session, {

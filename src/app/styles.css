@@ -1972,3 +1972,70 @@ p { color: var(--muted); line-height: 1.6; }
 @media (prefers-reduced-motion: reduce) {
   .app-toast { animation: none; }
 }
+
+/* Continue lyrics editor preview */
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.continue-lyrics-preview {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #0a111d;
+}
+
+.continue-lyrics-preview__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.continue-lyrics-preview__heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.continue-lyrics-preview__heading strong {
+  font-size: 15px;
+}
+
+.continue-lyrics-preview__timeline {
+  width: 100%;
+}
+
+.continue-lyrics-preview__empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.game-round-heading__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.round-skip-button {
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .continue-lyrics-preview__heading,
+  .game-round-heading__actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .round-skip-button,
+  .continue-lyrics-preview__heading .secondary-button {
+    width: 100%;
+  }
+}
