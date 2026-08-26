@@ -1,4 +1,4 @@
-import { DATA_LIMITS, INTER_ROUND_LIMITS } from './limits';
+import { DATA_LIMITS, GAME_POINTS_STEP, INTER_ROUND_LIMITS } from './limits';
 
 export function normalizeRuleText(value: string) {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru-RU');
@@ -15,13 +15,13 @@ export function isValidQuestionPoints(value: unknown): value is number {
 export function getNextQuestionPoints(questions: readonly { points: number }[]) {
   const used = new Set(questions.map((question) => question.points));
   const max = questions.reduce((value, question) => Math.max(value, question.points), 0);
-  const nextAfterMax = max + 100;
+  const nextAfterMax = max + GAME_POINTS_STEP;
   if (isValidQuestionPoints(nextAfterMax) && !used.has(nextAfterMax)) return nextAfterMax;
 
   // A category contains at most 100 questions, so one of the first N+1 standard
-  // 100-point slots is guaranteed to be free.
+  // GAME_POINTS_STEP slots is guaranteed to be free.
   for (let index = 1; index <= questions.length + 1; index += 1) {
-    const candidate = index * 100;
+    const candidate = index * GAME_POINTS_STEP;
     if (isValidQuestionPoints(candidate) && !used.has(candidate)) return candidate;
   }
 

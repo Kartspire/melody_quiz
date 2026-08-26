@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DATA_LIMITS, INTER_ROUND_LIMITS } from './limits';
+import { DATA_LIMITS, GAME_POINTS_STEP, INTER_ROUND_LIMITS } from './limits';
 import {
   getNextQuestionPoints,
   isPersistableTeamName,
@@ -65,8 +65,8 @@ describe('game editing rules', () => {
   });
 
   it('chooses a free persistable value for a newly added question', () => {
-    expect(getNextQuestionPoints([{ points: 100 }, { points: 300 }, { points: 200 }])).toBe(400);
-    expect(getNextQuestionPoints([{ points: 1_000_000_000 }, { points: 100 }])).toBe(200);
+    expect(getNextQuestionPoints([{ points: 10 }, { points: 30 }, { points: 20 }])).toBe(40);
+    expect(getNextQuestionPoints([{ points: DATA_LIMITS.maxQuestionPoints }, { points: GAME_POINTS_STEP }])).toBe(GAME_POINTS_STEP * 2);
   });
 
 });

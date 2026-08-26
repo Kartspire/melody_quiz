@@ -1,3 +1,5 @@
+export const GAME_POINTS_STEP = 10;
+
 export const GAME_LIMITS = {
   rounds: 10,
   categoriesPerRound: 100,

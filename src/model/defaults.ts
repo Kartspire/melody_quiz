@@ -1,7 +1,7 @@
 import { createId } from '../lib/ids';
 import { cloneInterRoundInstance } from '../interRounds/templates';
 import { canonicalizeAudioAsset, createContentAddressedAudioAsset } from '../lib/audio';
-import { DATA_LIMITS } from './limits';
+import { DATA_LIMITS, GAME_POINTS_STEP } from './limits';
 import type {
   AudioAsset,
   Category,
@@ -35,12 +35,12 @@ const TEAM_COLORS = [
   '#475569', '#c026d3', '#4d7c0f', '#c2410c', '#0e7490', '#6d28d9', '#047857', '#9f1239',
 ] as const;
 
-export const createQuestion = (points = 100): Question => ({ id: createId('question'), points });
+export const createQuestion = (points = GAME_POINTS_STEP): Question => ({ id: createId('question'), points });
 
 export const createCategory = (index = 0): Category => ({
   id: createId('category'),
   name: `Категория ${index + 1}`,
-  questions: [100, 200, 300, 400, 500].map(createQuestion),
+  questions: Array.from({ length: 5 }, (_, index) => (index + 1) * GAME_POINTS_STEP).map(createQuestion),
 });
 
 export const createRound = (index = 0): Round => ({

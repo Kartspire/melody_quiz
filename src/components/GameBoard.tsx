@@ -160,11 +160,14 @@ export function GameBoard() {
           <button className="primary-button" onClick={() => nextStageRequested()}>Перейти к следующему этапу →</button>
         </div>
       ) : (
-        <div className="quiz-board" style={{ '--category-count': round.categories.length } as React.CSSProperties}>
+        <div className="quiz-board">
           {round.categories.map((category) => (
             <section className="board-category" key={category.id}>
               <header>{category.name}</header>
-              <div className="board-category__questions">
+              <div
+                className="board-category__questions"
+                style={{ '--question-count': category.questions.length } as React.CSSProperties}
+              >
                 {category.questions.map((question) => {
                   const completed = session.completedQuestionIds.includes(question.id);
                   const song = question.songId ? songById.get(question.songId) : undefined;

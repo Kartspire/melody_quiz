@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useUnit } from 'effector-react';
 import { $activeGame, $session, teamScoreChanged } from '../model/game';
+import { GAME_POINTS_STEP } from '../model/limits';
 import { DraftNumberInput } from './DraftNumberInput';
 
 export function Scoreboard() {
@@ -23,13 +24,13 @@ export function Scoreboard() {
             </div>
             {editing ? (
               <div className="score-editor">
-                <button onClick={() => teamScoreChanged({ teamId: team.id, score: score - 100 })}>−100</button>
+                <button onClick={() => teamScoreChanged({ teamId: team.id, score: score - GAME_POINTS_STEP })}>{`−${GAME_POINTS_STEP}`}</button>
                 <DraftNumberInput
                   ariaLabel={`Баллы ${team.name}`}
                   value={score}
                   onCommit={(nextScore) => teamScoreChanged({ teamId: team.id, score: nextScore })}
                 />
-                <button onClick={() => teamScoreChanged({ teamId: team.id, score: score + 100 })}>+100</button>
+                <button onClick={() => teamScoreChanged({ teamId: team.id, score: score + GAME_POINTS_STEP })}>{`+${GAME_POINTS_STEP}`}</button>
                 <button className="icon-button" onClick={() => setEditingTeamId(null)} title="Готово">✓</button>
               </div>
             ) : (
