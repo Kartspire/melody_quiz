@@ -26,6 +26,7 @@ export function createSessionCheckpoint(session: GameSession): GameSessionHistor
     completedInterRoundIds: [...session.completedInterRoundIds],
     interRound: session.interRound ? { ...session.interRound } : null,
     scores: { ...session.scores },
+    selectingTeamId: session.selectingTeamId,
     awardedTeamId: session.awardedTeamId,
     answerRevealed: session.answerRevealed,
     activeExcludedTeamIds: [...session.activeExcludedTeamIds],

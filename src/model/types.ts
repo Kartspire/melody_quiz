@@ -65,6 +65,8 @@ export type ContinueLyricsInterRound = {
   templateId: 'continueLyrics';
   templateVersion: 1;
   title: string;
+  /** One rule per line. Shown to players on the inter-round intro screen. */
+  rules: string;
   tasks: ContinueLyricsTask[];
 };
 
@@ -86,6 +88,8 @@ export type CommonTheme4InterRound = {
   templateId: 'commonTheme4';
   templateVersion: 2;
   title: string;
+  /** One rule per line. Shown to players on the inter-round intro screen. */
+  rules: string;
   stages: CommonThemeStage[];
 };
 
@@ -128,6 +132,8 @@ export type GameSessionHistoryEntry = {
   completedInterRoundIds: string[];
   interRound: InterRoundSession | null;
   scores: Record<string, number>;
+  /** Team that chooses the next song while an ordinary round is active. */
+  selectingTeamId: string | null;
   awardedTeamId: string | null;
   answerRevealed: boolean;
   activeExcludedTeamIds: string[];
@@ -191,6 +197,7 @@ export type LegacyPersistedState = {
     activeQuestionId?: string | null;
     completedQuestionIds?: string[];
     scores?: Record<string, number>;
+    selectingTeamId?: string | null;
     awardedTeamId?: string | null;
     answerRevealed?: boolean;
     activeExcludedTeamIds?: string[];

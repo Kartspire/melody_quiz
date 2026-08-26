@@ -11,6 +11,7 @@ import {
   continueLyricsTaskChanged,
   continueLyricsTaskRemoved,
   interRoundRemoved,
+  interRoundRulesChanged,
   interRoundTitleChanged,
 } from '../model/game';
 import { DATA_LIMITS, GAME_LIMITS, INTER_ROUND_LIMITS } from '../model/limits';
@@ -21,7 +22,7 @@ import { useFeedback } from '../components/feedback/FeedbackProvider';
 import { AudioTimeline } from '../components/AudioTimeline';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
 import { useObjectUrl } from '../hooks/useObjectUrl';
-import { getInterRoundTemplate } from './templates';
+import { getInterRoundRules, getInterRoundTemplate } from './templates';
 
 export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
   const [mediaTracks, audioAssets] = useUnit([$mediaTracks, $audioAssets]);
@@ -52,10 +53,21 @@ export function InterRoundEditor({ interRound }: { interRound: InterRound }) {
         />
       </label>
 
+      <label className="field inter-round-rules-editor">
+        <span>Правила перед межраундом</span>
+        <textarea
+          maxLength={DATA_LIMITS.text.interRoundRules}
+          rows={6}
+          value={interRound.rules}
+          onChange={(event) => interRoundRulesChanged({ interRoundId: interRound.id, rules: event.target.value })}
+        />
+        <small className="field-hint">Каждая непустая строка отображается отдельным пунктом правил.</small>
+      </label>
+
       <details className="inter-round-rules-preview">
-        <summary>Правила, которые увидят игроки</summary>
+        <summary>Предпросмотр правил</summary>
         <h4>{template.rulesTitle}</h4>
-        <ol>{template.rules.map((rule) => <li key={rule}>{rule}</li>)}</ol>
+        <ol>{getInterRoundRules(interRound).map((rule, index) => <li key={`${index}:${rule}`}>{rule}</li>)}</ol>
       </details>
 
       {interRound.templateId === 'continueLyrics' ? (

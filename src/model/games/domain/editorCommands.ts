@@ -33,6 +33,7 @@ export type GameEditorCommand =
   | { type: 'addInterRound'; templateId: InterRoundTemplateId }
   | { type: 'removeInterRound'; interRoundId: string }
   | { type: 'changeInterRoundTitle'; interRoundId: string; title: string }
+  | { type: 'changeInterRoundRules'; interRoundId: string; rules: string }
   | { type: 'addContinueLyricsTask'; interRoundId: string }
   | { type: 'removeContinueLyricsTask'; interRoundId: string; taskId: string }
   | {
@@ -171,6 +172,17 @@ export function applyGameEditorCommand(
       return changed(touchGame({
         ...game,
         interRounds: game.interRounds.map((item) => item.id === command.interRoundId ? { ...item, title: command.title } : item),
+      }, now), 'none');
+    }
+
+    case 'changeInterRoundRules': {
+      if (
+        command.rules.length > DATA_LIMITS.text.interRoundRules
+        || !game.interRounds.some((item) => item.id === command.interRoundId && item.rules !== command.rules)
+      ) return unchanged(game);
+      return changed(touchGame({
+        ...game,
+        interRounds: game.interRounds.map((item) => item.id === command.interRoundId ? { ...item, rules: command.rules } : item),
       }, now), 'none');
     }
 

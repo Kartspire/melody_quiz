@@ -160,6 +160,7 @@ function validateInterRound(
   const prefix = `Межраунд ${index + 1}`;
   takeId(interRound?.id, prefix);
   if (!isBoundedText(interRound?.title, DATA_LIMITS.text.interRoundTitle) || (requiresPlayable && !interRound.title.trim())) issues.push(`${prefix}: не задано корректное название.`);
+  if (!isBoundedText(interRound?.rules, DATA_LIMITS.text.interRoundRules)) issues.push(`${prefix}: правила слишком длинные или имеют некорректный формат.`);
   if (interRound?.templateId === 'continueLyrics' && interRound.templateVersion !== 1) issues.push(`${prefix}: версия шаблона не поддерживается.`);
   if (interRound?.templateId === 'commonTheme4' && interRound.templateVersion !== 2) issues.push(`${prefix}: версия шаблона не поддерживается.`);
 
@@ -409,6 +410,7 @@ export function assertValidPersistedState(state: PersistedState): void {
         throw new Error('Игровая сессия содержит некорректный приостановленный вопрос.');
       }
     }
+    if (session.selectingTeamId !== null && !teamIds.has(session.selectingTeamId)) throw new Error('Игровая сессия содержит некорректную команду, выбирающую песню.');
     if (session.awardedTeamId !== null && (!teamIds.has(session.awardedTeamId) || !session.activeQuestionId)) throw new Error('Игровая сессия содержит некорректную команду-победителя вопроса.');
 
     if (session.interRound) {
@@ -435,6 +437,7 @@ function isValidHistoryEntry(entry: unknown): entry is GameSessionHistoryEntry {
   if (value.stageId !== null && !isBoundedText(value.stageId, DATA_LIMITS.text.id)) return false;
   if (value.activeQuestionId !== null && !isBoundedText(value.activeQuestionId, DATA_LIMITS.text.id)) return false;
   if (value.pausedQuestionId !== null && !isBoundedText(value.pausedQuestionId, DATA_LIMITS.text.id)) return false;
+  if (value.selectingTeamId !== null && !isBoundedText(value.selectingTeamId, DATA_LIMITS.text.id)) return false;
   if (value.awardedTeamId !== null && !isBoundedText(value.awardedTeamId, DATA_LIMITS.text.id)) return false;
   for (const list of [
     value.completedQuestionIds,

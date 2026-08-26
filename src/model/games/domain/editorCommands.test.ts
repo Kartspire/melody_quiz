@@ -82,4 +82,20 @@ describe('applyGameEditorCommand', () => {
     expect(result.sessionImpact).toBe('none');
     expect(result.game.rounds[0].categories[0].questions[0].songId).toBe('song-1');
   });
+
+  it('updates custom inter-round rules without reconciling gameplay state', () => {
+    const game = createGame('Custom rules');
+    const interRound = createContinueLyricsInterRound();
+    game.interRounds = [interRound];
+
+    const result = applyGameEditorCommand(game, {
+      type: 'changeInterRoundRules',
+      interRoundId: interRound.id,
+      rules: 'Первое правило\nВторое правило',
+    }, context());
+
+    expect(result.changed).toBe(true);
+    expect(result.sessionImpact).toBe('none');
+    expect(result.game.interRounds[0].rules).toBe('Первое правило\nВторое правило');
+  });
 });

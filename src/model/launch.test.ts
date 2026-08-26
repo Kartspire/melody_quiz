@@ -72,6 +72,16 @@ describe('game launch use-case', () => {
     });
   });
 
+  it('recreates an untouched placeholder session when the game is launched for the first time', () => {
+    const fixture = createPlayableFixture();
+
+    expect(decide(fixture, 'continue')).toEqual({
+      type: 'ready',
+      gameId: fixture.game.id,
+      resetSession: true,
+    });
+  });
+
   it('asks for confirmation before a fresh start when saved progress exists', () => {
     const fixture = createPlayableFixture();
     const session = createSession(fixture.game);

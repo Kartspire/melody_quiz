@@ -46,13 +46,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 
 .scoreboard { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .team-score { --team-color: #fff; min-width: 142px; padding: 8px 12px; border: 1px solid color-mix(in srgb, var(--team-color) 34%, transparent); border-radius: 13px; background: color-mix(in srgb, var(--team-color) 9%, rgba(17,24,39,.75)); }
+.team-score--selecting { border-color: color-mix(in srgb, var(--team-color) 78%, white 22%); background: color-mix(in srgb, var(--team-color) 20%, rgba(17,24,39,.82)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--team-color) 24%, transparent), 0 0 20px color-mix(in srgb, var(--team-color) 22%, transparent); }
+.team-score--editing { min-width: 250px; }
 .team-score__identity { display: flex; align-items: center; justify-content: center; gap: 7px; color: #dbe5f4; font-size: 12px; font-weight: 700; }
+.team-score__selector-label { margin-top: 4px; color: color-mix(in srgb, var(--team-color) 72%, white 28%); font-size: 9px; font-weight: 900; letter-spacing: .04em; text-align: center; text-transform: uppercase; }
 .team-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--team-color); box-shadow: 0 0 14px color-mix(in srgb, var(--team-color) 65%, transparent); }
 .score-value { display: block; width: 100%; margin-top: 1px; padding: 0; background: none; border: 0; cursor: pointer; font-size: 24px; line-height: 1.1; font-weight: 900; font-variant-numeric: tabular-nums; }
-.score-editor { display: flex; align-items: center; gap: 4px; margin-top: 5px; }
+.score-editor { display: grid; gap: 6px; margin-top: 5px; }
+.score-editor__points { display: flex; align-items: center; justify-content: center; gap: 4px; }
 .score-editor input { width: 72px; padding: 5px; text-align: center; color: white; background: #0c1220; border: 1px solid var(--line); border-radius: 7px; }
 .score-editor button { padding: 5px 6px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); cursor: pointer; font-size: 10px; }
 .score-editor .icon-button { font-size: 13px; }
+.score-editor .score-next-block { width: 100%; border-color: rgba(148,163,184,.22); color: #cbd5e1; }
+.score-editor .score-next-block--active { border-color: rgba(251,113,133,.42); background: rgba(127,29,29,.28); color: #fecdd3; }
+.score-editor__status { color: #fda4af; font-size: 10px; text-align: center; }
 
 .page-shell { width: min(1500px, calc(100% - 40px)); margin: 0 auto; padding: 42px 0 72px; }
 .eyebrow { display: inline-block; margin-bottom: 8px; color: var(--accent); font-size: 12px; font-weight: 900; letter-spacing: .14em; text-transform: uppercase; }

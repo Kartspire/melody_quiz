@@ -9,6 +9,7 @@ describe('inter-round templates', () => {
     expect(interRound.tasks).toHaveLength(1);
     expect(interRound.tasks[0].requiredWordsCount).toBe(5);
     expect(interRound.tasks[0].cutAtMs).toBe(30_000);
+    expect(interRound.rules).toContain('Прослушайте фрагмент');
   });
 
   it('creates a common-theme inter-round with one default stage of four tracks', () => {
@@ -17,6 +18,7 @@ describe('inter-round templates', () => {
     expect(interRound.templateVersion).toBe(2);
     expect(interRound.stages).toHaveLength(1);
     expect(interRound.stages[0].tracks).toHaveLength(4);
+    expect(interRound.rules).toContain('четыре музыкальных трека');
     expect(getInterRoundTemplate(interRound.templateId).name).toContain('4 трека');
   });
 });

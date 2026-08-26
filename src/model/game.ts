@@ -47,6 +47,7 @@ export {
   gameTitleChanged,
   interRoundAdded,
   interRoundRemoved,
+  interRoundRulesChanged,
   interRoundTitleChanged,
   questionAdded,
   questionChanged,
@@ -83,6 +84,7 @@ export {
   questionOpened,
   teamAwarded,
   teamIncorrectToggled,
+  teamNextAnswerBlockToggled,
   teamUnlocked,
   teamScoreChanged,
 } from './games/session';

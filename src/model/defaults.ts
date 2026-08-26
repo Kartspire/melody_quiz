@@ -113,7 +113,7 @@ export const cloneGame = (source: GameConfig): GameConfig => {
   };
 };
 
-export const createSession = (config: GameConfig): GameSession => ({
+export const createSession = (config: GameConfig, random: () => number = Math.random): GameSession => ({
   gameId: config.id,
   started: false,
   stageIndex: 0,
@@ -124,6 +124,7 @@ export const createSession = (config: GameConfig): GameSession => ({
   completedInterRoundIds: [],
   interRound: null,
   scores: Object.fromEntries(config.teams.map((team) => [team.id, 0])),
+  selectingTeamId: pickRandomTeamId(config.teams, random),
   awardedTeamId: null,
   answerRevealed: false,
   activeExcludedTeamIds: [],
@@ -132,6 +133,12 @@ export const createSession = (config: GameConfig): GameSession => ({
   history: [],
   updatedAt: Date.now(),
 });
+
+function pickRandomTeamId(teams: Team[], random: () => number) {
+  if (teams.length === 0) return null;
+  const normalized = Math.min(Math.max(random(), 0), 0.9999999999999999);
+  return teams[Math.floor(normalized * teams.length)]?.id ?? teams[0]?.id ?? null;
+}
 
 export const createAudioAsset = (file: File) => createContentAddressedAudioAsset(file);
 
@@ -272,6 +279,7 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
     completedInterRoundIds: [],
     interRound: null,
     scores: legacy.session.scores ?? {},
+    selectingTeamId: legacy.session.selectingTeamId ?? pickRandomTeamId(game.teams, Math.random),
     awardedTeamId: legacy.session.awardedTeamId ?? null,
     answerRevealed: legacy.session.answerRevealed ?? Boolean(legacy.session.awardedTeamId),
     activeExcludedTeamIds: legacy.session.activeExcludedTeamIds ?? [],

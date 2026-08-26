@@ -1,4 +1,5 @@
 import { createId } from '../lib/ids';
+import { getDefaultInterRoundRules } from '../interRounds/templates';
 import type { CommonThemeTrack, GameConfig, GameStage, InterRound } from './types';
 
 type LegacyCommonTheme4InterRoundV1 = {
@@ -80,6 +81,7 @@ function normalizeInterRound(raw: RawInterRound): { interRound: InterRound; chan
         templateId: 'commonTheme4',
         templateVersion: 2,
         title: raw.title,
+        rules: getDefaultInterRoundRules('commonTheme4'),
         stages: [{
           id: createId('theme-stage'),
           tracks: raw.tracks,
@@ -88,5 +90,19 @@ function normalizeInterRound(raw: RawInterRound): { interRound: InterRound; chan
       },
     };
   }
+
+  if (raw?.templateId === 'continueLyrics' || raw?.templateId === 'commonTheme4') {
+    const candidate = raw as InterRound & { rules?: unknown };
+    if (typeof candidate.rules !== 'string') {
+      return {
+        interRound: {
+          ...candidate,
+          rules: getDefaultInterRoundRules(candidate.templateId),
+        } as InterRound,
+        changed: true,
+      };
+    }
+  }
+
   return { interRound: raw as InterRound, changed: false };
 }

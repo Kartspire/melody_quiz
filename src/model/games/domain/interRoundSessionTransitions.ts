@@ -1,5 +1,5 @@
 import { getInterRoundAnswerStepCount } from '../../../interRounds/templates';
-import { getActiveStage, getInterRoundForStage } from '../../session';
+import { getActiveStage, getInterRoundForStage, getSelectingTeamIdForStageEntry } from '../../session';
 import type { GameConfig, GameSession } from '../../types';
 import { withSessionCheckpoint } from './sessionHistory';
 
@@ -125,6 +125,7 @@ function completeInterRound(
   return withSessionCheckpoint(session, {
     stageIndex: nextStageIndex,
     stageId: game.stages[nextStageIndex]?.id ?? null,
+    selectingTeamId: getSelectingTeamIdForStageEntry(game, session.scores, nextStageIndex, session.selectingTeamId),
     completedInterRoundIds: unique([...session.completedInterRoundIds, interRoundId]),
     interRound: null,
     pausedQuestionId: null,

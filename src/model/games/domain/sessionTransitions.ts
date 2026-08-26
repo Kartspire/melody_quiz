@@ -1,6 +1,7 @@
 import {
   findQuestion,
   getActiveStage,
+  getSelectingTeamIdForStageEntry,
   getRoundForStage,
 } from '../../session';
 import type { GameConfig, GameSession } from '../../types';
@@ -19,6 +20,7 @@ export type GameSessionCommand =
   | { type: 'closeQuestion'; completed: boolean; advanceStage?: boolean }
   | { type: 'awardTeam'; teamId: string }
   | { type: 'markTeamIncorrect'; teamId: string }
+  | { type: 'toggleTeamNextAnswerBlock'; teamId: string }
   | { type: 'unlockTeam'; teamId: string }
   | { type: 'nobodyGuessed' }
   | { type: 'changeTeamScore'; teamId: string; score: number }
@@ -92,6 +94,9 @@ export function transitionGameSession(
         activeQuestionId: null,
         pausedQuestionId: null,
         interRound: null,
+        selectingTeamId: stageChanged
+          ? getSelectingTeamIdForStageEntry(game, session.scores, nextStageIndex, session.selectingTeamId)
+          : session.selectingTeamId,
         awardedTeamId: null,
         answerRevealed: false,
         activeExcludedTeamIds: [],
@@ -113,6 +118,7 @@ export function transitionGameSession(
       const question = findQuestion(game, session.activeQuestionId);
       return withSessionCheckpoint(session, {
         awardedTeamId: command.teamId,
+        selectingTeamId: command.teamId,
         answerRevealed: true,
         completedQuestionIds: unique([...session.completedQuestionIds, session.activeQuestionId]),
         scores: {
@@ -136,6 +142,25 @@ export function transitionGameSession(
         updatedAt: now(),
         currentIncorrectTeamIds: unique([...session.currentIncorrectTeamIds, command.teamId]),
         nextExcludedTeamIds: unique([...session.nextExcludedTeamIds, command.teamId]),
+      };
+    }
+
+    case 'toggleTeamNextAnswerBlock': {
+      if (!game.teams.some((team) => team.id === command.teamId)) return session;
+      const shouldBlock = !session.nextExcludedTeamIds.includes(command.teamId);
+      const nextExcludedTeamIds = shouldBlock
+        ? unique([...session.nextExcludedTeamIds, command.teamId])
+        : withoutTeam(session.nextExcludedTeamIds, command.teamId);
+      return {
+        ...session,
+        updatedAt: now(),
+        nextExcludedTeamIds,
+        history: session.history.map((entry) => ({
+          ...entry,
+          nextExcludedTeamIds: shouldBlock
+            ? unique([...entry.nextExcludedTeamIds, command.teamId])
+            : withoutTeam(entry.nextExcludedTeamIds, command.teamId),
+        })),
       };
     }
 
@@ -195,6 +220,7 @@ export function transitionGameSession(
       return withSessionCheckpoint(session, {
         stageIndex: nextStageIndex,
         stageId: game.stages[nextStageIndex]?.id ?? null,
+        selectingTeamId: getSelectingTeamIdForStageEntry(game, session.scores, nextStageIndex, session.selectingTeamId),
         activeQuestionId: null,
         pausedQuestionId: null,
         interRound: null,

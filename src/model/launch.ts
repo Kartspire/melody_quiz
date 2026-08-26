@@ -59,7 +59,10 @@ export function evaluateGameLaunch({
     return {
       type: 'ready',
       gameId: game.id,
-      resetSession: !session,
+      // A game gets a placeholder clean session as soon as it is created in the editor.
+      // Recreate that untouched session on the first real launch so derived launch state
+      // (including the random selector for the first round) uses the final team list.
+      resetSession: !session || !hasSessionProgress(session),
     };
   }
 

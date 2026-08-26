@@ -110,9 +110,27 @@ describe('session helpers', () => {
     if (migrated.templateId === 'commonTheme4') {
       expect(migrated.templateVersion).toBe(2);
       expect(migrated.stages).toHaveLength(1);
+      expect(migrated.rules.length).toBeGreaterThan(0);
     }
     expect(reconciled.interRound?.taskIndex).toBe(0);
     expect(reconciled.interRound?.trackIndex).toBe(3);
+  });
+
+  it('adds default editable rules to inter-rounds saved before custom rules existed', () => {
+    const game = createGame('Legacy rules');
+    const interRound = createContinueLyricsInterRound();
+    const legacyInterRound = { ...interRound } as Partial<typeof interRound>;
+    delete legacyInterRound.rules;
+    const rawGame = {
+      ...game,
+      interRounds: [legacyInterRound],
+      stages: [game.stages[0], createInterRoundStage(interRound.id)],
+    } as unknown as GameConfig;
+
+    const normalized = normalizeGameConfig(rawGame).game;
+    const migrated = normalized.interRounds[0];
+
+    expect(migrated.rules).toContain('Прослушайте фрагмент');
   });
 
 

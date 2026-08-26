@@ -71,6 +71,7 @@ export function createContinueLyricsInterRound(index = 0): ContinueLyricsInterRo
     templateId: 'continueLyrics',
     templateVersion: 1,
     title: index > 0 ? `Продолжи песню ${index + 1}` : 'Продолжи песню',
+    rules: getDefaultInterRoundRules('continueLyrics'),
     tasks: [createContinueLyricsTask()],
   };
 }
@@ -98,12 +99,24 @@ export function createCommonTheme4InterRound(index = 0): CommonTheme4InterRound 
     templateId: 'commonTheme4',
     templateVersion: 2,
     title: index > 0 ? `4 трека — общая тема ${index + 1}` : '4 трека — общая тема',
+    rules: getDefaultInterRoundRules('commonTheme4'),
     stages: [createCommonThemeStage()],
   };
 }
 
 export function getInterRoundTemplate(templateId: InterRoundTemplateId) {
   return INTER_ROUND_TEMPLATES[templateId];
+}
+
+export function getDefaultInterRoundRules(templateId: InterRoundTemplateId) {
+  return INTER_ROUND_TEMPLATES[templateId].rules.join('\n');
+}
+
+export function getInterRoundRules(interRound: InterRound) {
+  return interRound.rules
+    .split(/\r?\n/)
+    .map((rule) => rule.trim())
+    .filter(Boolean);
 }
 
 export function getInterRoundTrackIds(interRound: InterRound): Array<string | undefined> {

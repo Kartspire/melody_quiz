@@ -41,6 +41,39 @@ export function getRoundOrdinal(config: GameConfig, stageIndex: number): number 
   return Math.max(1, ordinal);
 }
 
+export function getLowestScoringTeamId(config: GameConfig, scores: Record<string, number>) {
+  let selectedId: string | null = null;
+  let selectedScore = Number.POSITIVE_INFINITY;
+  for (const team of config.teams) {
+    const score = Number.isSafeInteger(scores[team.id]) ? scores[team.id] : 0;
+    if (score < selectedScore) {
+      selectedId = team.id;
+      selectedScore = score;
+    }
+  }
+  return selectedId;
+}
+
+/**
+ * Keeps the random selector for the first ordinary round and chooses the lowest-scoring
+ * team whenever a later ordinary round is entered. Non-round stages keep the value hidden.
+ */
+export function getSelectingTeamIdForStageEntry(
+  config: GameConfig,
+  scores: Record<string, number>,
+  stageIndex: number,
+  currentSelectingTeamId: string | null,
+) {
+  const teamIds = new Set(config.teams.map((team) => team.id));
+  const validCurrent = currentSelectingTeamId && teamIds.has(currentSelectingTeamId)
+    ? currentSelectingTeamId
+    : null;
+  const stage = config.stages[stageIndex];
+  if (stage?.kind !== 'round') return validCurrent;
+  if (getRoundOrdinal(config, stageIndex) === 1) return validCurrent ?? config.teams[0]?.id ?? null;
+  return getLowestScoringTeamId(config, scores);
+}
+
 export function isRoundComplete(config: GameConfig, session: GameSession) {
   const round = getRoundForStage(config, getActiveStage(config, session));
   if (!round) return false;
@@ -135,6 +168,11 @@ export function normalizeSession(rawSession: GameSession | LegacyCompatibleSessi
     completedInterRoundIds: Array.isArray(session.completedInterRoundIds) ? session.completedInterRoundIds : [],
     interRound,
     scores: session.scores && typeof session.scores === 'object' ? session.scores : {},
+    selectingTeamId: typeof session.selectingTeamId === 'string'
+      ? session.selectingTeamId
+      : typeof session.awardedTeamId === 'string'
+        ? session.awardedTeamId
+        : null,
     awardedTeamId: typeof session.awardedTeamId === 'string' ? session.awardedTeamId : null,
     answerRevealed: Boolean(answerRevealed),
     activeExcludedTeamIds,
@@ -163,6 +201,7 @@ export function reconcileSession(
   const scores = Object.fromEntries(config.teams.map((team) => [team.id, Number.isSafeInteger(session.scores?.[team.id]) ? session.scores[team.id] : 0]));
 
   let stageIndex = resolveStageIndex(config, session);
+  const initialStageIndex = stageIndex;
   let stageId = config.stages[stageIndex]?.id ?? null;
   let activeStage = config.stages[stageIndex];
 
@@ -213,6 +252,14 @@ export function reconcileSession(
     ? session.awardedTeamId
     : null;
   const answerRevealed = activeQuestionId ? Boolean(session.answerRevealed) : false;
+  const selectingTeamId = getSelectingTeamIdForStageEntry(
+    config,
+    scores,
+    stageIndex,
+    initialStageIndex === stageIndex && session.selectingTeamId && teamIds.has(session.selectingTeamId)
+      ? session.selectingTeamId
+      : null,
+  );
 
   return {
     ...session,
@@ -225,6 +272,7 @@ export function reconcileSession(
     completedInterRoundIds,
     interRound,
     scores,
+    selectingTeamId,
     awardedTeamId: activeQuestionId ? awardedTeamId : null,
     answerRevealed,
     activeExcludedTeamIds: activeQuestionId || pausedQuestionId
@@ -272,6 +320,11 @@ function normalizeHistoryEntry(rawEntry: unknown, config?: GameConfig): GameSess
     scores: entry.scores && typeof entry.scores === 'object'
       ? Object.fromEntries(Object.entries(entry.scores).filter(([, score]) => Number.isSafeInteger(score)))
       : {},
+    selectingTeamId: typeof entry.selectingTeamId === 'string'
+      ? entry.selectingTeamId
+      : typeof entry.awardedTeamId === 'string'
+        ? entry.awardedTeamId
+        : null,
     awardedTeamId: typeof entry.awardedTeamId === 'string' ? entry.awardedTeamId : null,
     answerRevealed: Boolean(entry.answerRevealed),
     activeExcludedTeamIds: Array.isArray(entry.activeExcludedTeamIds) ? entry.activeExcludedTeamIds.filter((id): id is string => typeof id === 'string') : [],

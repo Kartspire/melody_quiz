@@ -16,7 +16,7 @@ import type { AudioAsset } from '../model/types';
 import { useObjectUrl } from '../hooks/useObjectUrl';
 import { AudioTimeline } from '../components/AudioTimeline';
 import { useAudioPlayer } from '../hooks/useAudioPlayer';
-import { getInterRoundTemplate } from './templates';
+import { getInterRoundRules, getInterRoundTemplate } from './templates';
 
 export function InterRoundPlayer() {
   const [interRound, session, canGoBack, mediaTracks, audioAssets] = useUnit([
@@ -32,6 +32,7 @@ export function InterRoundPlayer() {
   if (!interRound || !session) return null;
   const progress = session.interRound?.interRoundId === interRound.id ? session.interRound : null;
   const template = getInterRoundTemplate(interRound.templateId);
+  const rules = getInterRoundRules(interRound);
 
   if (!progress || progress.phase === 'intro') {
     return (
@@ -41,7 +42,7 @@ export function InterRoundPlayer() {
         <h1>{interRound.title}</h1>
         <section className="inter-round-rules-card">
           <h2>{template.rulesTitle}</h2>
-          <ol>{template.rules.map((rule) => <li key={rule}>{rule}</li>)}</ol>
+          {rules.length > 0 && <ol>{rules.map((rule, index) => <li key={`${index}:${rule}`}>{rule}</li>)}</ol>}
         </section>
         <p className="inter-round-scoring-note">Баллы за межраунд ведущий начисляет вручную через табло команд.</p>
         <button className="primary-button inter-round-main-action" onClick={() => interRoundStarted()}>Начать межраунд</button>
