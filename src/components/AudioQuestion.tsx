@@ -6,6 +6,7 @@ import { useAudioPlayer } from '../hooks/useAudioPlayer';
 export function AudioQuestion({
   question,
   roundName,
+  categoryName,
   teams,
   awardedTeamId,
   answerRevealed,
@@ -21,6 +22,7 @@ export function AudioQuestion({
 }: {
   question: PlayableQuestion;
   roundName: string;
+  categoryName: string;
   teams: Team[];
   awardedTeamId: string | null;
   answerRevealed: boolean;
@@ -55,9 +57,20 @@ export function AudioQuestion({
       <div className="game-step-navigation">
         <button className="text-button game-back-button" onClick={onBack}>← Вернуться на предыдущий этап</button>
       </div>
-      <div className="question-meta">
-        <span>{roundName}</span>
-        <strong>{question.points} баллов</strong>
+      <div className="question-context" aria-label="Информация о вопросе">
+        <div className="question-context__item question-context__item--round">
+          <span>Раунд</span>
+          <strong>{roundName}</strong>
+        </div>
+        <div className="question-context__item question-context__item--category">
+          <span>Категория</span>
+          <strong>{categoryName}</strong>
+        </div>
+        <div className="question-context__item question-context__item--points">
+          <span>Стоимость</span>
+          <strong>{question.points}</strong>
+          <small>баллов</small>
+        </div>
       </div>
 
       <div className={plusMode ? 'now-playing now-playing--answer' : 'now-playing'}>

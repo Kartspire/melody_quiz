@@ -76,10 +76,15 @@ export function GameBoard() {
   if (interRound) return <InterRoundPlayer />;
 
   if (activeQuestion && round) {
+    const category = round.categories.find((item) =>
+      item.questions.some((question) => question.id === activeQuestion.id),
+    );
+
     return (
       <AudioQuestion
         question={activeQuestion}
         roundName={round.name}
+        categoryName={category?.name ?? 'Без категории'}
         teams={config.teams}
         awardedTeamId={session.awardedTeamId}
         answerRevealed={session.answerRevealed}
