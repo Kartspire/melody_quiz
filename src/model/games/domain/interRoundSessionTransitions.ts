@@ -60,7 +60,10 @@ export function transitionInterRoundSession(
       if (session.interRound?.phase !== 'play') return session;
       const interRound = getInterRoundForStage(game, getActiveStage(game, session));
       if (!interRound) return session;
-      if (interRound.templateId === 'commonTheme4' && session.interRound.trackIndex < 4) return session;
+      if (interRound.templateId === 'commonTheme4') {
+        const lastStageIndex = Math.max(0, interRound.stages.length - 1);
+        if (session.interRound.taskIndex !== lastStageIndex || session.interRound.trackIndex < 4) return session;
+      }
 
       return withSessionCheckpoint(session, {
         interRound: { ...session.interRound, phase: 'answer' },
@@ -68,10 +71,31 @@ export function transitionInterRoundSession(
     }
 
     case 'nextInterRoundStep': {
-      if (session.interRound?.phase !== 'answer') return session;
       const interRound = getInterRoundForStage(game, getActiveStage(game, session));
-      if (!interRound) return session;
+      if (!interRound || !session.interRound) return session;
 
+      if (interRound.templateId === 'commonTheme4') {
+        if (session.interRound.phase === 'play') {
+          if (session.interRound.trackIndex < 4) return session;
+          const nextTaskIndex = session.interRound.taskIndex + 1;
+          if (nextTaskIndex >= interRound.stages.length) return session;
+
+          return withSessionCheckpoint(session, {
+            interRound: {
+              interRoundId: interRound.id,
+              phase: 'play',
+              taskIndex: nextTaskIndex,
+              itemId: interRound.stages[nextTaskIndex]?.id ?? null,
+              trackIndex: 0,
+            },
+          }, now);
+        }
+
+        if (session.interRound.phase !== 'answer') return session;
+        return completeInterRound(game, session, interRound.id, now);
+      }
+
+      if (session.interRound.phase !== 'answer') return session;
       const taskCount = getInterRoundAnswerStepCount(interRound);
       const nextTaskIndex = session.interRound.taskIndex + 1;
       if (nextTaskIndex < taskCount) {
@@ -80,27 +104,34 @@ export function transitionInterRoundSession(
             interRoundId: interRound.id,
             phase: 'play',
             taskIndex: nextTaskIndex,
-            itemId: interRound.templateId === 'continueLyrics'
-              ? interRound.tasks[nextTaskIndex]?.id ?? null
-              : interRound.stages[nextTaskIndex]?.id ?? null,
+            itemId: interRound.tasks[nextTaskIndex]?.id ?? null,
             trackIndex: 0,
           },
         }, now);
       }
 
-      const nextStageIndex = Math.min(session.stageIndex + 1, game.stages.length);
-      return withSessionCheckpoint(session, {
-        stageIndex: nextStageIndex,
-        stageId: game.stages[nextStageIndex]?.id ?? null,
-        completedInterRoundIds: unique([...session.completedInterRoundIds, interRound.id]),
-        interRound: null,
-        pausedQuestionId: null,
-        activeExcludedTeamIds: [],
-        currentIncorrectTeamIds: [],
-        nextExcludedTeamIds: [],
-      }, now);
+      return completeInterRound(game, session, interRound.id, now);
     }
   }
+}
+
+function completeInterRound(
+  game: GameConfig,
+  session: GameSession,
+  interRoundId: string,
+  now: () => number,
+) {
+  const nextStageIndex = Math.min(session.stageIndex + 1, game.stages.length);
+  return withSessionCheckpoint(session, {
+    stageIndex: nextStageIndex,
+    stageId: game.stages[nextStageIndex]?.id ?? null,
+    completedInterRoundIds: unique([...session.completedInterRoundIds, interRoundId]),
+    interRound: null,
+    pausedQuestionId: null,
+    activeExcludedTeamIds: [],
+    currentIncorrectTeamIds: [],
+    nextExcludedTeamIds: [],
+  }, now);
 }
 
 function unique(values: string[]) {

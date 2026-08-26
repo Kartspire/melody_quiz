@@ -84,7 +84,7 @@ export function InterRoundPlayer() {
       phase={progress.phase}
       playbackIndex={progress.trackIndex}
       tracks={stage.tracks.map((item, index) => ({ ...item, ...resolved[index] }))}
-      commonTheme={stage.commonTheme}
+      answerStages={interRound.stages}
       onAdvance={() => commonThemeTrackAdvanced()}
       onReveal={() => interRoundAnswerRevealed()}
       onBack={() => previousStageRequested()}
@@ -198,7 +198,7 @@ function CommonThemePlayer({
   phase,
   playbackIndex,
   tracks,
-  commonTheme,
+  answerStages,
   onAdvance,
   onReveal,
   onBack,
@@ -211,7 +211,11 @@ function CommonThemePlayer({
   phase: 'play' | 'answer';
   playbackIndex: number;
   tracks: Array<{ id: string; answerTitle: string; answerArtist: string; asset?: AudioAsset }>;
-  commonTheme: string;
+  answerStages: Array<{
+    id: string;
+    tracks: Array<{ id: string; answerTitle: string; answerArtist: string }>;
+    commonTheme: string;
+  }>;
   onAdvance: () => void;
   onReveal: () => void;
   onBack: () => void;
@@ -239,15 +243,31 @@ function CommonThemePlayer({
     return (
       <main className="inter-round-screen page-shell">
         <GameBackButton onBack={onBack} />
-        <span className="eyebrow">{title} · Этап {stageNumber} из {totalStages}</span>
+        <span className="eyebrow">{title} · Все этапы завершены</span>
         <h1>Правильные ответы</h1>
-        <section className="common-theme-answer-list">
-          {tracks.map((item, index) => (
-            <article key={item.id}><span>{index + 1}</span><div><strong>{item.answerArtist}</strong><p>{item.answerTitle}</p></div></article>
+        <div className="common-theme-all-answers">
+          {answerStages.map((answerStage, answerStageIndex) => (
+            <section className="common-theme-answer-stage" key={answerStage.id}>
+              <div className="common-theme-answer-stage__heading">
+                <span className="eyebrow">Этап {answerStageIndex + 1} из {answerStages.length}</span>
+                <h2>Ответы этапа {answerStageIndex + 1}</h2>
+              </div>
+              <div className="common-theme-answer-list">
+                {answerStage.tracks.map((item, index) => (
+                  <article key={item.id}>
+                    <span>{index + 1}</span>
+                    <div><strong>{item.answerArtist}</strong><p>{item.answerTitle}</p></div>
+                  </article>
+                ))}
+              </div>
+              <div className="common-theme-final-answer">
+                <span>Общая тема</span>
+                <strong>{answerStage.commonTheme}</strong>
+              </div>
+            </section>
           ))}
-        </section>
-        <section className="common-theme-final-answer"><span>Общая тема</span><strong>{commonTheme}</strong></section>
-        <button className="primary-button inter-round-main-action" onClick={onNext}>{lastStage ? 'Завершить межраунд →' : 'Следующий этап →'}</button>
+        </div>
+        <button className="primary-button inter-round-main-action" onClick={onNext}>Завершить межраунд →</button>
       </main>
     );
   }
@@ -268,9 +288,15 @@ function CommonThemePlayer({
         </div>
         {playingComplete ? (
           <>
-            <h2>Все четыре трека прозвучали</h2>
-            <p>Дождитесь, пока команды допишут общую тему и сдадут бланки ведущему.</p>
-            <button className="primary-button" onClick={onReveal}>Показать правильные ответы</button>
+            <h2>{lastStage ? 'Все этапы межраунда сыграны' : `Этап ${stageNumber} завершён`}</h2>
+            <p>
+              {lastStage
+                ? 'Все треки прозвучали. После сдачи бланков можно показать ответы сразу по всем этапам.'
+                : 'Ответы пока не показываются. Переходите к следующему этапу — все ответы будут показаны в самом конце межраунда.'}
+            </p>
+            <button className="primary-button" onClick={lastStage ? onReveal : onNext}>
+              {lastStage ? 'Показать все правильные ответы' : 'Следующий этап →'}
+            </button>
           </>
         ) : (
           <>

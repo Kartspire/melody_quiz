@@ -126,7 +126,7 @@ function restoreLegacyPreviousSession(
         updatedAt: now(),
         interRound: {
           interRoundId: interRound.id,
-          phase: 'answer',
+          phase: interRound.templateId === 'commonTheme4' ? 'play' : 'answer',
           taskIndex: previousTaskIndex,
           itemId: interRound.templateId === 'continueLyrics'
             ? interRound.tasks[previousTaskIndex]?.id ?? null

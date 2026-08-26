@@ -48,7 +48,6 @@ export function AdminPanel() {
           <h1>{config.title || 'Без названия'}</h1>
           <p>{config.rounds.length} раундов · {config.interRounds.length} межраундов · {assignedCount}/{questionsCount} песен назначено · {config.teams.length} команд</p>
         </div>
-        <button className="primary-button" onClick={() => gameLaunchRequested({ gameId: config.id, mode: 'fresh' })}>▶ Начать новую игру</button>
       </div>
 
       <nav className="editor-tabs" aria-label="Разделы редактора">
@@ -85,9 +84,12 @@ export function AdminPanel() {
       {tab === 'teams' && <AdminTeamsTab config={config} session={session} />}
       {tab === 'settings' && <AdminSettingsTab config={config} questionsCount={questionsCount} assignedCount={assignedCount} />}
 
-      <div className="admin-footer editor-footer">
-        <p>Изменения сохраняются автоматически. Песни находятся в общей медиатеке и могут использоваться в других играх.</p>
-      </div>
+      <button
+        className="primary-button editor-start-game-button"
+        onClick={() => gameLaunchRequested({ gameId: config.id, mode: 'fresh' })}
+      >
+        ▶ Начать новую игру
+      </button>
 
       {showInterRoundLibrary && <InterRoundTemplateDialog onClose={() => setShowInterRoundLibrary(false)} />}
 
