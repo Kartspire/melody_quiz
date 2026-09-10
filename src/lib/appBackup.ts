@@ -13,7 +13,7 @@ const MANIFEST_PATH = 'manifest.json';
 export type AppBackupManifest = {
   type: typeof BACKUP_TYPE;
   formatVersion: typeof BACKUP_FORMAT_VERSION;
-  stateVersion: PersistedState['version'];
+  stateVersion: 4 | PersistedState['version'];
   createdAt: number;
   files: AppBackupFileDescriptor[];
 };
@@ -30,8 +30,10 @@ type BackupAudioAsset = Omit<AudioAsset, 'blob'> & {
   size: number;
 };
 
-type BackupStatePayload = Omit<PersistedState, 'audioAssets'> & {
+type BackupStatePayload = Omit<PersistedState, 'version' | 'audioAssets' | 'audioProjects'> & {
+  version: 4 | PersistedState['version'];
   audioAssets: BackupAudioAsset[];
+  audioProjects?: PersistedState['audioProjects'];
 };
 
 export type ParsedAppBackup = {
@@ -76,6 +78,7 @@ export async function exportAppBackup(state: PersistedState) {
     songs: state.songs,
     mediaTracks: state.mediaTracks,
     audioAssets,
+    audioProjects: state.audioProjects,
     sessions: state.sessions,
     activeGameId: state.activeGameId,
   };
@@ -178,11 +181,12 @@ export async function parseAppBackup(file: Blob): Promise<ParsedAppBackup> {
   }
 
   const state: PersistedState = {
-    version: payload.version,
+    version: 5,
     games: payload.games,
     songs: payload.songs,
     mediaTracks: payload.mediaTracks,
     audioAssets,
+    audioProjects: payload.audioProjects ?? [],
     sessions: payload.sessions,
     activeGameId: payload.activeGameId,
   };
@@ -193,7 +197,7 @@ export async function parseAppBackup(file: Blob): Promise<ParsedAppBackup> {
 function validateManifest(value: AppBackupManifest) {
   if (!value || typeof value !== 'object') throw new Error('manifest.json имеет неподдерживаемую структуру.');
   if (value.type !== BACKUP_TYPE || value.formatVersion !== BACKUP_FORMAT_VERSION) throw new Error('Неподдерживаемый формат резервной копии.');
-  if (value.stateVersion !== 4) throw new Error('Резервная копия создана несовместимой версией приложения.');
+  if (value.stateVersion !== 4 && value.stateVersion !== 5) throw new Error('Резервная копия создана несовместимой версией приложения.');
   if (!Number.isSafeInteger(value.createdAt) || value.createdAt <= 0) throw new Error('В manifest указана некорректная дата создания.');
   if (!Array.isArray(value.files) || value.files.length < 1 || value.files.length > DATA_LIMITS.packageFiles + 1) throw new Error('Некорректный список файлов резервной копии.');
   let stateFiles = 0;
@@ -209,9 +213,9 @@ function validateManifest(value: AppBackupManifest) {
 }
 
 function validateStatePayload(value: BackupStatePayload, manifest: AppBackupManifest) {
-  if (!value || typeof value !== 'object' || value.version !== 4) throw new Error('state.json имеет неподдерживаемую структуру.');
+  if (!value || typeof value !== 'object' || (value.version !== 4 && value.version !== 5)) throw new Error('state.json имеет неподдерживаемую структуру.');
   if (manifest.stateVersion !== value.version) throw new Error('Версия state.json не совпадает с manifest.');
-  if (!Array.isArray(value.games) || !Array.isArray(value.songs) || !Array.isArray(value.mediaTracks) || !Array.isArray(value.audioAssets) || !Array.isArray(value.sessions)) {
+  if (!Array.isArray(value.games) || !Array.isArray(value.songs) || !Array.isArray(value.mediaTracks) || !Array.isArray(value.audioAssets) || !Array.isArray(value.sessions) || (value.version === 5 && !Array.isArray(value.audioProjects))) {
     throw new Error('state.json не содержит обязательные разделы приложения.');
   }
   if (value.audioAssets.length > DATA_LIMITS.packageFiles) throw new Error('В резервной копии слишком много аудиофайлов.');

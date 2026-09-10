@@ -45,11 +45,12 @@ const makeFixture = async () => {
 };
 
 const emptyState = (): PersistedState => ({
-  version: 4,
+  version: 5,
   games: [],
   songs: [],
   mediaTracks: [],
   audioAssets: [],
+  audioProjects: [],
   sessions: [],
   activeGameId: null,
 });

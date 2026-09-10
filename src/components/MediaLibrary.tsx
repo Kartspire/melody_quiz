@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import {
   $audioAssets,
+  $audioProjects,
   $games,
   $mediaTracks,
   $persistedState,
@@ -32,7 +33,7 @@ type MediaTab = 'songs' | 'audio';
 const MEDIA_PAGE_SIZE = 50;
 
 export function MediaLibrary() {
-  const [songs, mediaTracks, audioAssets, games, persistedState] = useUnit([$songs, $mediaTracks, $audioAssets, $games, $persistedState]);
+  const [songs, mediaTracks, audioAssets, audioProjects, games, persistedState] = useUnit([$songs, $mediaTracks, $audioAssets, $audioProjects, $games, $persistedState]);
   const { notify } = useFeedback();
   const [tab, setTab] = useState<MediaTab>('songs');
   const [query, setQuery] = useState('');
@@ -46,7 +47,7 @@ export function MediaLibrary() {
   const audioById = useMemo(() => new Map(audioAssets.map((asset) => [asset.id, asset])), [audioAssets]);
   const trackById = useMemo(() => new Map(mediaTracks.map((track) => [track.id, track])), [mediaTracks]);
   const usageBySongId = useMemo(() => buildSongUsageMap(games), [games]);
-  const trackUsage = useMemo(() => buildMediaTrackUsageMap(games, songs), [games, songs]);
+  const trackUsage = useMemo(() => buildMediaTrackUsageMap(games, songs, audioProjects), [audioProjects, games, songs]);
 
   const filteredSongs = useMemo(() => {
     const normalized = normalizeSearchText(query);

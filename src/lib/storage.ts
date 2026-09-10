@@ -3,17 +3,18 @@ import { createInitialState, createMediaTrack, createSession, migrateLegacyState
 import { reconcileSession } from '../model/session';
 import { normalizeGameConfig } from '../model/migrations';
 import { assertValidPersistedState } from '../model/validation';
-import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, MediaTrack, PersistedState, Song } from '../model/types';
+import type { AudioAsset, AudioProject, GameConfig, GameSession, LegacyPersistedState, MediaTrack, PersistedState, Song } from '../model/types';
 import { createSerializedSaveQueue } from './storageQueue';
 
 const DB_NAME = import.meta.env.MODE === 'test-browser' ? 'melody-quiz-test-db' : 'melody-quiz-db';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const LEGACY_STORE = 'state';
 const LEGACY_STATE_KEY = 'app-state';
 const GAMES_STORE = 'games';
 const SONGS_STORE = 'songs';
 const MEDIA_TRACKS_STORE = 'media-tracks';
 const AUDIO_STORE = 'audio';
+const AUDIO_PROJECTS_STORE = 'audio-projects';
 const SESSIONS_STORE = 'sessions';
 const META_STORE = 'meta';
 const ACTIVE_GAME_KEY = 'active-game-id';
@@ -65,6 +66,7 @@ const openDatabase = () =>
       if (!db.objectStoreNames.contains(SONGS_STORE)) db.createObjectStore(SONGS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(MEDIA_TRACKS_STORE)) db.createObjectStore(MEDIA_TRACKS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(AUDIO_STORE)) db.createObjectStore(AUDIO_STORE, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(AUDIO_PROJECTS_STORE)) db.createObjectStore(AUDIO_PROJECTS_STORE, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(SESSIONS_STORE)) db.createObjectStore(SESSIONS_STORE, { keyPath: 'gameId' });
       if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE);
     };
@@ -99,15 +101,16 @@ export const loadState = async (): Promise<PersistedState> => {
   const db = await openDatabase();
   try {
     const transaction = db.transaction(
-      [GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
+      [GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, AUDIO_PROJECTS_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE],
       'readonly',
     );
 
-    const [games, songs, mediaTracks, rawAudioAssets, sessions, activeGameId, initialized, revision, legacy] = await Promise.all([
+    const [games, songs, mediaTracks, rawAudioAssets, audioProjects, sessions, activeGameId, initialized, revision, legacy] = await Promise.all([
       requestValue(transaction.objectStore(GAMES_STORE).getAll() as IDBRequest<GameConfig[]>),
       requestValue(transaction.objectStore(SONGS_STORE).getAll() as IDBRequest<StoredSong[]>),
       requestValue(transaction.objectStore(MEDIA_TRACKS_STORE).getAll() as IDBRequest<MediaTrack[]>),
       requestValue(transaction.objectStore(AUDIO_STORE).getAll() as IDBRequest<Array<Partial<AudioAsset> & { size?: number }>>),
+      requestValue(transaction.objectStore(AUDIO_PROJECTS_STORE).getAll() as IDBRequest<AudioProject[]>),
       requestValue(transaction.objectStore(SESSIONS_STORE).getAll() as IDBRequest<GameSession[]>),
       requestValue(transaction.objectStore(META_STORE).get(ACTIVE_GAME_KEY) as IDBRequest<string | null | undefined>),
       requestValue(transaction.objectStore(META_STORE).get(STATE_INITIALIZED_KEY) as IDBRequest<boolean | undefined>),
@@ -123,6 +126,7 @@ export const loadState = async (): Promise<PersistedState> => {
         songs,
         mediaTracks,
         audioAssets: rawAudioAssets,
+        audioProjects,
         sessions,
         activeGameId: games.some((game) => game.id === activeGameId) ? activeGameId! : games[0]?.id ?? null,
       });
@@ -172,7 +176,7 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
   const db = await openDatabase();
   let transaction: IDBTransaction | undefined;
   try {
-    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, AUDIO_PROJECTS_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
     const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
@@ -209,11 +213,12 @@ async function rewriteCanonicalState(state: PersistedState, expectedRevision: nu
   const db = await openDatabase();
   let transaction: IDBTransaction | undefined;
   try {
-    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE], 'readwrite');
+    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, AUDIO_PROJECTS_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE], 'readwrite');
     const gamesStore = transaction.objectStore(GAMES_STORE);
     const songsStore = transaction.objectStore(SONGS_STORE);
     const mediaTracksStore = transaction.objectStore(MEDIA_TRACKS_STORE);
     const audioStore = transaction.objectStore(AUDIO_STORE);
+    const audioProjectsStore = transaction.objectStore(AUDIO_PROJECTS_STORE);
     const sessionsStore = transaction.objectStore(SESSIONS_STORE);
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
@@ -226,12 +231,14 @@ async function rewriteCanonicalState(state: PersistedState, expectedRevision: nu
     songsStore.clear();
     mediaTracksStore.clear();
     audioStore.clear();
+    audioProjectsStore.clear();
     sessionsStore.clear();
     transaction.objectStore(LEGACY_STORE).delete(LEGACY_STATE_KEY);
     state.games.forEach((game) => gamesStore.put(game));
     state.songs.forEach((song) => songsStore.put(song));
     state.mediaTracks.forEach((track) => mediaTracksStore.put(track));
     state.audioAssets.forEach((asset) => audioStore.put(asset));
+    state.audioProjects.forEach((project) => audioProjectsStore.put(project));
     state.sessions.forEach((session) => sessionsStore.put(session));
     metaStore.put(state.activeGameId, ACTIVE_GAME_KEY);
     metaStore.put(true, STATE_INITIALIZED_KEY);
@@ -274,6 +281,13 @@ function applyStateDiff(transaction: IDBTransaction, previous: PersistedState | 
     transaction.objectStore(MEDIA_TRACKS_STORE),
     previous?.mediaTracks ?? [],
     next.mediaTracks,
+    (item) => item.id,
+    (before, after) => before.updatedAt === after.updatedAt && before === after,
+  ) || changed;
+  changed = syncStore(
+    transaction.objectStore(AUDIO_PROJECTS_STORE),
+    previous?.audioProjects ?? [],
+    next.audioProjects,
     (item) => item.id,
     (before, after) => before.updatedAt === after.updatedAt && before === after,
   ) || changed;
@@ -328,6 +342,7 @@ async function canonicalizeLoadedState(raw: {
   songs: StoredSong[];
   mediaTracks: MediaTrack[];
   audioAssets: Array<Partial<AudioAsset> & { size?: number }>;
+  audioProjects: AudioProject[];
   sessions: GameSession[];
   activeGameId: string | null;
 }): Promise<{ state: PersistedState; changed: boolean }> {
@@ -438,11 +453,12 @@ async function canonicalizeLoadedState(raw: {
   return {
     changed,
     state: {
-      version: 4,
+      version: 5,
       games: normalizedGames,
       songs,
       mediaTracks,
       audioAssets,
+      audioProjects: raw.audioProjects ?? [],
       sessions: [...sessionsByGameId.values()],
       activeGameId: raw.activeGameId,
     },

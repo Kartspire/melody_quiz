@@ -2,6 +2,7 @@ import { createInitialState, createRound, createRoundStage, createSession } from
 import { loadState, restoreState, saveState } from '../../src/lib/storage';
 import { exportAppBackup, parseAppBackup } from '../../src/lib/appBackup';
 import { transitionGameSession } from '../../src/model/games/domain/sessionTransitions';
+import { createAudioProject } from '../../src/features/audioEditor/audioProject';
 
 if (import.meta.env.MODE !== 'test-browser') throw new Error('Запустите npm run test:browser');
 const run = document.querySelector<HTMLButtonElement>('#run')!;
@@ -44,6 +45,13 @@ run.onclick = async () => {
       const parsed = await parseAppBackup(backup.blob);
       await restoreState(parsed.state);
       assert(JSON.stringify((await loadState()).sessions) === JSON.stringify(state.sessions), 'Изменилась партия');
+    });
+    await check('Аудиопроекты сохраняются в отдельном IndexedDB store', async () => {
+      const state = await loadState();
+      const project = createAudioProject('Browser storage check');
+      await restoreState({ ...state, audioProjects: [project] });
+      const reloaded = await loadState();
+      assert(reloaded.audioProjects.some((item) => item.id === project.id), 'Аудиопроект не восстановился');
     });
     await check('Синхронная ошибка записи откатывает полное восстановление', async () => {
       const state = await loadState();
@@ -88,7 +96,7 @@ run.onclick = async () => {
       const notification = await request('status');
       assert(notification.externalRevision > 0, 'Нет уведомления BroadcastChannel');
     });
-    summary.textContent = `${passed}/6 проверок пройдено`;
+    summary.textContent = `${passed}/7 проверок пройдено`;
   } catch (error) {
     summary.textContent = `Проверки остановлены: ${String(error)}`;
   } finally {

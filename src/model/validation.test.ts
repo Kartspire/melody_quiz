@@ -5,7 +5,7 @@ import { assertValidGameStructure, assertValidPersistedState, getGameStartIssues
 import { INTER_ROUND_LIMITS } from './limits';
 import type { CommonThemeStage, PersistedState, Song } from './types';
 
-const emptyState = (): PersistedState => ({ version: 4, games: [], songs: [], mediaTracks: [], audioAssets: [], sessions: [], activeGameId: null });
+const emptyState = (): PersistedState => ({ version: 5, games: [], songs: [], mediaTracks: [], audioAssets: [], audioProjects: [], sessions: [], activeGameId: null });
 
 describe('game validation', () => {
   it('rejects game structures that the editor must not import', () => {

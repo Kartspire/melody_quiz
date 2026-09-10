@@ -1,5 +1,5 @@
 import { getInterRoundTrackIds } from '../../../interRounds/templates';
-import type { GameConfig, Song } from '../../types';
+import type { AudioProject, GameConfig, Song } from '../../types';
 
 export type SongUsage = {
   gameId: string;
@@ -36,7 +36,7 @@ export function buildSongUsageMap(games: readonly GameConfig[]) {
   return result;
 }
 
-export function buildMediaTrackUsageMap(games: readonly GameConfig[], songs: readonly Song[]) {
+export function buildMediaTrackUsageMap(games: readonly GameConfig[], songs: readonly Song[], audioProjects: readonly AudioProject[] = []) {
   const result = new Map<string, MediaTrackUsage[]>();
 
   for (const song of songs) {
@@ -68,9 +68,25 @@ export function buildMediaTrackUsageMap(games: readonly GameConfig[], songs: rea
     }
   }
 
+  for (const project of audioProjects) {
+    for (const lane of project.lanes) {
+      const counts = new Map<string, number>();
+      for (const clip of lane.clips) counts.set(clip.sourceTrackId, (counts.get(clip.sourceTrackId) ?? 0) + 1);
+      for (const [trackId, count] of counts) {
+        const items = result.get(trackId) ?? [];
+        items.push({
+          sourceId: project.id,
+          label: `Монтаж: ${project.name}`,
+          role: count > 1 ? `${lane.name}, ${count} фрагмента` : lane.name,
+        });
+        result.set(trackId, items);
+      }
+    }
+  }
+
   return result;
 }
 
-export function isMediaTrackUsed(games: readonly GameConfig[], songs: readonly Song[], trackId: string) {
-  return buildMediaTrackUsageMap(games, songs).has(trackId);
+export function isMediaTrackUsed(games: readonly GameConfig[], songs: readonly Song[], trackId: string, audioProjects: readonly AudioProject[] = []) {
+  return buildMediaTrackUsageMap(games, songs, audioProjects).has(trackId);
 }

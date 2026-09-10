@@ -18,6 +18,7 @@ import { GameBoard } from '../components/GameBoard';
 import { GameLibrary } from '../components/GameLibrary';
 import { MediaLibrary } from '../components/MediaLibrary';
 import { VocalRemovalPage } from '../features/vocalRemoval/VocalRemovalPage';
+import { AudioEditorPage } from '../features/audioEditor/AudioEditorPage';
 import { Scoreboard } from '../components/Scoreboard';
 import { SettingsPage } from '../components/SettingsPage';
 import { GameLaunchDialog } from '../components/GameLaunchDialog';
@@ -127,6 +128,7 @@ function AppContent() {
         <nav className="sidebar-nav" aria-label="Основная навигация">
           <SidebarButton screen={screen} target="library" icon="▣" label="Мои игры" />
           <SidebarButton screen={screen} target="media" icon="♫" label="Медиатека" />
+          <SidebarButton screen={screen} target="audio-editor" icon="✂" label="Аудиоредактор" />
           <SidebarButton screen={screen} target="vocal-removal" icon="◉" label="Обработка трека" />
           <SidebarButton screen={screen} target="settings" icon="⚙" label="Настройки" />
         </nav>
@@ -147,6 +149,7 @@ function AppContent() {
 
       <GameLaunchDialog />
       <div className="app-content">
+        {screen === 'audio-editor' && <AudioEditorPage />}
         <div hidden={screen !== 'vocal-removal'}>
           <VocalRemovalPage active={screen === 'vocal-removal'} />
         </div>

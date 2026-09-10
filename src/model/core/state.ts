@@ -1,7 +1,7 @@
 import { createStore } from 'effector';
 import { createGame, createSession } from '../defaults';
 import { canWriteState } from './writeAccess';
-import type { AudioAsset, GameConfig, GameSession, MediaTrack, Song } from '../types';
+import type { AudioAsset, AudioProject, GameConfig, GameSession, MediaTrack, Song } from '../types';
 
 const initialGame = createGame('Угадай мелодию');
 
@@ -9,6 +9,7 @@ export const $games = createStore<GameConfig[]>([initialGame], { updateFilter: c
 export const $songs = createStore<Song[]>([], { updateFilter: canWriteState });
 export const $mediaTracks = createStore<MediaTrack[]>([], { updateFilter: canWriteState });
 export const $audioAssets = createStore<AudioAsset[]>([], { updateFilter: canWriteState });
+export const $audioProjects = createStore<AudioProject[]>([], { updateFilter: canWriteState });
 export const $sessions = createStore<Record<string, GameSession>>({
   [initialGame.id]: createSession(initialGame),
 }, { updateFilter: canWriteState });

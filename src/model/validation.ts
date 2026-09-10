@@ -11,6 +11,7 @@ import {
 } from './rules';
 import type {
   AudioAsset,
+  AudioProject,
   GameConfig,
   GameSession,
   GameSessionHistoryEntry,
@@ -22,6 +23,7 @@ import type {
 
 const MIN_DATE = Date.UTC(2000, 0, 1);
 const MAX_DATE = Date.UTC(2100, 0, 1);
+const MAX_AUDIO_EDITOR_TIME_MS = 6 * 60 * 60 * 1000;
 
 export function assertValidGameStructure(game: GameConfig): void {
   const issues = getGameStructureIssues(game);
@@ -314,8 +316,41 @@ export function assertValidMediaTrack(track: MediaTrack): void {
   if (!isValidTimestamp(track.createdAt) || !isValidTimestamp(track.updatedAt)) throw new Error(`Медиатрек «${track.name}» содержит некорректную дату.`);
 }
 
+function assertValidAudioProject(project: AudioProject): void {
+  if (!project || !isBoundedText(project.id, DATA_LIMITS.text.id) || !project.id) throw new Error('В хранилище найден аудиопроект с некорректным id.');
+  if (!isBoundedText(project.name, DATA_LIMITS.text.audioProjectName) || !project.name.trim()) throw new Error(`Аудиопроект «${project.id}» не содержит корректного названия.`);
+  if (!isValidTimestamp(project.createdAt) || !isValidTimestamp(project.updatedAt)) throw new Error(`Аудиопроект «${project.name}» содержит некорректную дату.`);
+  if (!Array.isArray(project.lanes) || project.lanes.length < 1 || project.lanes.length > 32) throw new Error(`Аудиопроект «${project.name}» содержит некорректное количество дорожек.`);
+  const laneIds = new Set<string>();
+  const clipIds = new Set<string>();
+  let clipCount = 0;
+  for (const lane of project.lanes) {
+    if (!lane || !isBoundedText(lane.id, DATA_LIMITS.text.id) || !lane.id || laneIds.has(lane.id)) throw new Error(`Аудиопроект «${project.name}» содержит некорректную дорожку.`);
+    laneIds.add(lane.id);
+    if (!isBoundedText(lane.name, DATA_LIMITS.text.audioLaneName) || !lane.name.trim() || typeof lane.muted !== 'boolean' || typeof lane.solo !== 'boolean' || !Array.isArray(lane.clips)) throw new Error(`Дорожка «${lane.id}» аудиопроекта повреждена.`);
+    clipCount += lane.clips.length;
+    if (clipCount > 5000) throw new Error(`Аудиопроект «${project.name}» содержит слишком много фрагментов.`);
+    for (const clip of lane.clips) {
+      if (!clip || !isBoundedText(clip.id, DATA_LIMITS.text.id) || !clip.id || clipIds.has(clip.id) || !isBoundedText(clip.sourceTrackId, DATA_LIMITS.text.id) || !clip.sourceTrackId) throw new Error(`Аудиопроект «${project.name}» содержит повреждённый фрагмент.`);
+      clipIds.add(clip.id);
+      const numeric = [clip.timelineStartMs, clip.sourceStartMs, clip.sourceEndMs, clip.gainDb, clip.fadeInMs, clip.fadeOutMs, clip.playbackRate];
+      const timelineDurationMs = (clip.sourceEndMs - clip.sourceStartMs) / clip.playbackRate;
+      if (
+        numeric.some((value) => !Number.isFinite(value))
+        || clip.timelineStartMs < 0 || clip.timelineStartMs > MAX_AUDIO_EDITOR_TIME_MS
+        || clip.sourceStartMs < 0 || clip.sourceStartMs > MAX_AUDIO_EDITOR_TIME_MS
+        || clip.sourceEndMs <= clip.sourceStartMs || clip.sourceEndMs > MAX_AUDIO_EDITOR_TIME_MS
+        || clip.gainDb < -60 || clip.gainDb > 12
+        || clip.fadeInMs < 0 || clip.fadeInMs > timelineDurationMs
+        || clip.fadeOutMs < 0 || clip.fadeOutMs > timelineDurationMs
+        || clip.playbackRate < 0.25 || clip.playbackRate > 4
+      ) throw new Error(`Фрагмент «${clip.id}» аудиопроекта содержит некорректные параметры.`);
+    }
+  }
+}
+
 export function assertValidPersistedState(state: PersistedState): void {
-  if (!state || state.version !== 4 || !Array.isArray(state.games) || !Array.isArray(state.songs) || !Array.isArray(state.mediaTracks) || !Array.isArray(state.audioAssets) || !Array.isArray(state.sessions)) {
+  if (!state || state.version !== 5 || !Array.isArray(state.games) || !Array.isArray(state.songs) || !Array.isArray(state.mediaTracks) || !Array.isArray(state.audioAssets) || !Array.isArray(state.audioProjects) || !Array.isArray(state.sessions)) {
     throw new Error('Локальное хранилище имеет неподдерживаемую структуру.');
   }
   for (const game of state.games) {
@@ -324,6 +359,7 @@ export function assertValidPersistedState(state: PersistedState): void {
   }
   state.songs.forEach(assertPersistableSong);
   state.mediaTracks.forEach(assertValidMediaTrack);
+  state.audioProjects.forEach(assertValidAudioProject);
 
   const gameIds = new Set<string>();
   for (const game of state.games) {
@@ -340,6 +376,11 @@ export function assertValidPersistedState(state: PersistedState): void {
     if (trackIds.has(track.id)) throw new Error(`Медиатрек «${track.id}» продублирован в локальном хранилище.`);
     trackIds.add(track.id);
   }
+  const projectIds = new Set<string>();
+  for (const project of state.audioProjects) {
+    if (projectIds.has(project.id)) throw new Error(`Аудиопроект «${project.id}» продублирован в локальном хранилище.`);
+    projectIds.add(project.id);
+  }
   const audioIds = new Set<string>();
   for (const asset of state.audioAssets) {
     if (!isVerifiedAudioAsset(asset)) throw new Error('Локальное хранилище содержит повреждённую запись аудио.');
@@ -348,6 +389,11 @@ export function assertValidPersistedState(state: PersistedState): void {
   }
 
   for (const track of state.mediaTracks) if (!audioIds.has(track.audioId)) throw new Error(`Медиатрек «${track.name}» ссылается на отсутствующий аудиофайл.`);
+  for (const project of state.audioProjects) {
+    for (const lane of project.lanes) {
+      for (const clip of lane.clips) if (!trackIds.has(clip.sourceTrackId)) throw new Error(`Аудиопроект «${project.name}» ссылается на отсутствующий медиатрек.`);
+    }
+  }
   for (const song of state.songs) {
     for (const trackId of [song.minusTrackId, song.plusTrackId]) {
       if (trackId && !trackIds.has(trackId)) throw new Error(`Песня «${song.artist} — ${song.title}» ссылается на отсутствующий медиатрек.`);

@@ -384,11 +384,12 @@ export function finalizeGameImport(prepared: PreparedGameImport, state: Persiste
   sessions.push(createSession(importedGame));
 
   return {
-    version: 4,
+    version: 5,
     games,
     songs: prepared.media.songs,
     mediaTracks: prepared.media.mediaTracks,
     audioAssets: prepared.media.audioAssets,
+    audioProjects: state.audioProjects,
     sessions,
     activeGameId: importedGame.id,
   };

@@ -16,6 +16,35 @@ export type MediaTrack = {
   updatedAt: number;
 };
 
+
+export type AudioClip = {
+  id: string;
+  sourceTrackId: string;
+  timelineStartMs: number;
+  sourceStartMs: number;
+  sourceEndMs: number;
+  gainDb: number;
+  fadeInMs: number;
+  fadeOutMs: number;
+  playbackRate: number;
+};
+
+export type AudioEditorLane = {
+  id: string;
+  name: string;
+  muted: boolean;
+  solo: boolean;
+  clips: AudioClip[];
+};
+
+export type AudioProject = {
+  id: string;
+  name: string;
+  lanes: AudioEditorLane[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type Song = {
   id: string;
   artist: string;
@@ -150,11 +179,12 @@ export type GameSession = GameSessionHistoryEntry & {
 };
 
 export type PersistedState = {
-  version: 4;
+  version: 5;
   games: GameConfig[];
   songs: Song[];
   mediaTracks: MediaTrack[];
   audioAssets: AudioAsset[];
+  audioProjects: AudioProject[];
   sessions: GameSession[];
   activeGameId: string | null;
 };
@@ -214,4 +244,4 @@ export type PlayableQuestion = Question & {
   plus?: AudioAsset;
 };
 
-export type Screen = 'library' | 'media' | 'vocal-removal' | 'settings' | 'game' | 'admin';
+export type Screen = 'library' | 'media' | 'audio-editor' | 'vocal-removal' | 'settings' | 'game' | 'admin';

@@ -44,6 +44,8 @@ export const DATA_LIMITS = {
     artist: 300,
     songTitle: 300,
     mediaTrackName: 300,
+    audioProjectName: 200,
+    audioLaneName: 120,
     interRoundTitle: 200,
     interRoundRules: 8_000,
     interRoundAnswer: 1000,

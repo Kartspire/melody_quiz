@@ -5,6 +5,7 @@
 export {
   $activeGameId,
   $audioAssets,
+  $audioProjects,
   $games,
   $mediaTracks,
   $sessions,

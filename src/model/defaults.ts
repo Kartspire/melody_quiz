@@ -196,11 +196,12 @@ export const cloneSong = (source: Song): Song => {
 export const createInitialState = (): PersistedState => {
   const game = createGame('Угадай мелодию');
   return {
-    version: 4,
+    version: 5,
     games: [game],
     songs: [],
     mediaTracks: [],
     audioAssets: [],
+    audioProjects: [],
     sessions: [createSession(game)],
     activeGameId: game.id,
   };
@@ -296,11 +297,12 @@ export const migrateLegacyState = async (legacy: LegacyPersistedState): Promise<
   };
 
   return {
-    version: 4,
+    version: 5,
     games: [game],
     songs,
     mediaTracks: [...trackByAudioId.values()],
     audioAssets: [...audioByHash.values()],
+    audioProjects: [],
     sessions: [session],
     activeGameId: gameId,
   };

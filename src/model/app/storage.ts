@@ -9,6 +9,7 @@ import {
 import {
   $activeGameId,
   $audioAssets,
+  $audioProjects,
   $games,
   $mediaTracks,
   $sessions,
@@ -152,6 +153,10 @@ $audioAssets
   .on(loadFx.doneData, (_, state) => state.audioAssets)
   .on(persistedStateImported, (_, state) => state.audioAssets);
 
+$audioProjects
+  .on(loadFx.doneData, (_, state) => state.audioProjects)
+  .on(persistedStateImported, (_, state) => state.audioProjects);
+
 $sessions
   .on(loadFx.doneData, (_, state) => hydrateSessions(state))
   .on(persistedStateImported, (_, state) => hydrateSessions(state));
@@ -166,17 +171,19 @@ export const $persistedState = combine(
     songs: $songs,
     mediaTracks: $mediaTracks,
     audioAssets: $audioAssets,
+    audioProjects: $audioProjects,
     sessions: $sessions,
     activeGameId: $activeGameId,
   },
-  ({ games, songs, mediaTracks, audioAssets, sessions, activeGameId }): PersistedState => {
+  ({ games, songs, mediaTracks, audioAssets, audioProjects, sessions, activeGameId }): PersistedState => {
     const usedAudioIds = new Set(mediaTracks.map((track) => track.audioId));
     return {
-      version: 4,
+      version: 5,
       games,
       songs,
       mediaTracks,
       audioAssets: audioAssets.filter((asset) => usedAudioIds.has(asset.id)),
+      audioProjects,
       sessions: Object.values(sessions),
       activeGameId,
     };

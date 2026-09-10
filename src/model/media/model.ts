@@ -5,7 +5,7 @@ import { isMediaTrackUsed } from './selectors';
 import { assertValidMediaTrack, isValidTimestamp } from '../validation';
 import { isVerifiedAudioAsset } from './domain/audioAsset';
 import { removableAudioIdAfterTrackRemoval } from './domain/libraryIdentity';
-import { $audioAssets, $games, $mediaTracks, $songs } from '../core/state';
+import { $audioAssets, $audioProjects, $games, $mediaTracks, $songs } from '../core/state';
 import type { AudioAsset, MediaTrack, Song } from '../types';
 
 export const songAdded = createEvent<{ song: Song; mediaTracks: MediaTrack[]; audioAssets: AudioAsset[] }>();
@@ -186,9 +186,9 @@ sample({
 
 sample({
   clock: mediaTrackDeleteRequested,
-  source: combine({ songs: $songs, mediaTracks: $mediaTracks, games: $games }),
-  filter: ({ songs, mediaTracks, games }, trackId) => mediaTracks.some((track) => track.id === trackId)
-    && !isMediaTrackUsed(games, songs, trackId),
+  source: combine({ songs: $songs, mediaTracks: $mediaTracks, games: $games, audioProjects: $audioProjects }),
+  filter: ({ songs, mediaTracks, games, audioProjects }, trackId) => mediaTracks.some((track) => track.id === trackId)
+    && !isMediaTrackUsed(games, songs, trackId, audioProjects),
   fn: ({ mediaTracks }, trackId) => ({
     trackId,
     removableAudioId: removableAudioIdAfterTrackRemoval(mediaTracks, trackId),
