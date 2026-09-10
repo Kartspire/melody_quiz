@@ -252,13 +252,15 @@ export function reconcileSession(
     ? session.awardedTeamId
     : null;
   const answerRevealed = activeQuestionId ? Boolean(session.answerRevealed) : false;
-  const selectingTeamId = getSelectingTeamIdForStageEntry(
+  const preservedSelectingTeamId = initialStageIndex === stageIndex
+    && session.selectingTeamId && teamIds.has(session.selectingTeamId)
+      ? session.selectingTeamId
+      : null;
+  const selectingTeamId = preservedSelectingTeamId ?? getSelectingTeamIdForStageEntry(
     config,
     scores,
     stageIndex,
-    initialStageIndex === stageIndex && session.selectingTeamId && teamIds.has(session.selectingTeamId)
-      ? session.selectingTeamId
-      : null,
+    null,
   );
 
   return {

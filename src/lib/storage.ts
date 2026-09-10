@@ -6,7 +6,7 @@ import { assertValidPersistedState } from '../model/validation';
 import type { AudioAsset, GameConfig, GameSession, LegacyPersistedState, MediaTrack, PersistedState, Song } from '../model/types';
 import { createSerializedSaveQueue } from './storageQueue';
 
-const DB_NAME = 'melody-quiz-db';
+const DB_NAME = import.meta.env.MODE === 'test-browser' ? 'melody-quiz-test-db' : 'melody-quiz-db';
 const DB_VERSION = 5;
 const LEGACY_STORE = 'state';
 const LEGACY_STATE_KEY = 'app-state';
@@ -148,15 +148,31 @@ export const loadState = async (): Promise<PersistedState> => {
   }
 };
 
-const enqueueSave = createSerializedSaveQueue<PersistedState>(saveStateInternal);
+const enqueueSave = createSerializedSaveQueue<{ state: PersistedState; restore: boolean }>(async ({ state, restore }) => {
+  if (!restore) return saveStateInternal(state);
+  assertValidPersistedState(state);
+  const db = await openDatabase();
+  try {
+    const revision = await requestValue(db.transaction(META_STORE, 'readonly').objectStore(META_STORE).get(REVISION_KEY));
+    const expectedRevision = Number.isSafeInteger(revision) && revision >= 0 ? revision as number : 0;
+    await rewriteCanonicalState(state, expectedRevision);
+    lastSavedState = state;
+  } finally {
+    db.close();
+  }
+});
 
-export const saveState = (state: PersistedState): Promise<void> => enqueueSave(state);
+export const saveState = (state: PersistedState): Promise<void> => enqueueSave({ state, restore: false });
+
+/** Explicit recovery ignores entity diffs from a failed load, preserving transaction atomicity. */
+export const restoreState = (state: PersistedState): Promise<void> => enqueueSave({ state, restore: true });
 
 async function saveStateInternal(state: PersistedState): Promise<void> {
   assertValidPersistedState(state);
   const db = await openDatabase();
+  let transaction: IDBTransaction | undefined;
   try {
-    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
     const metaStore = transaction.objectStore(META_STORE);
     const storedRevision = await requestValue(metaStore.get(REVISION_KEY) as IDBRequest<number | undefined>);
     const actualRevision = Number.isSafeInteger(storedRevision) && (storedRevision ?? 0) >= 0 ? storedRevision! : 0;
@@ -181,6 +197,9 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
     knownRevision = actualRevision + 1;
     lastSavedState = state;
     announceRevision();
+  } catch (error) {
+    abortTransaction(transaction);
+    throw error;
   } finally {
     db.close();
   }
@@ -188,8 +207,9 @@ async function saveStateInternal(state: PersistedState): Promise<void> {
 
 async function rewriteCanonicalState(state: PersistedState, expectedRevision: number): Promise<void> {
   const db = await openDatabase();
+  let transaction: IDBTransaction | undefined;
   try {
-    const transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE], 'readwrite');
+    transaction = db.transaction([GAMES_STORE, SONGS_STORE, MEDIA_TRACKS_STORE, AUDIO_STORE, SESSIONS_STORE, META_STORE, LEGACY_STORE], 'readwrite');
     const gamesStore = transaction.objectStore(GAMES_STORE);
     const songsStore = transaction.objectStore(SONGS_STORE);
     const mediaTracksStore = transaction.objectStore(MEDIA_TRACKS_STORE);
@@ -207,6 +227,7 @@ async function rewriteCanonicalState(state: PersistedState, expectedRevision: nu
     mediaTracksStore.clear();
     audioStore.clear();
     sessionsStore.clear();
+    transaction.objectStore(LEGACY_STORE).delete(LEGACY_STATE_KEY);
     state.games.forEach((game) => gamesStore.put(game));
     state.songs.forEach((song) => songsStore.put(song));
     state.mediaTracks.forEach((track) => mediaTracksStore.put(track));
@@ -219,9 +240,18 @@ async function rewriteCanonicalState(state: PersistedState, expectedRevision: nu
     await transactionDone(transaction);
     knownRevision = actualRevision + 1;
     announceRevision();
+  } catch (error) {
+    abortTransaction(transaction);
+    throw error;
   } finally {
     db.close();
   }
+}
+
+function abortTransaction(transaction: IDBTransaction | undefined) {
+  // A synchronous put()/structured-clone error does not automatically abort
+  // earlier writes in the same transaction. Explicitly roll them all back.
+  try { transaction?.abort(); } catch { /* Already completed or aborted. */ }
 }
 
 function applyStateDiff(transaction: IDBTransaction, previous: PersistedState | null, next: PersistedState) {

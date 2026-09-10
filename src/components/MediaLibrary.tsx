@@ -103,13 +103,10 @@ export function MediaLibrary() {
     if (!pendingImport) return;
     try {
       setBusy('import');
-      const latestPrepared = await prepareMediaMerge(
-        pendingImport.packageData,
-        persistedState.songs,
-        persistedState.mediaTracks,
-        persistedState.audioAssets,
-      );
-      await persistedStateImportFx(finalizeLibraryImport(latestPrepared, persistedState));
+      await persistedStateImportFx(async (current) => {
+        const prepared = await prepareMediaMerge(pendingImport.packageData, current.songs, current.mediaTracks, current.audioAssets);
+        return finalizeLibraryImport(prepared, current);
+      });
       setPendingImport(null);
       notify({ kind: 'success', message: 'Медиатека импортирована.' });
     } catch (error) {
@@ -194,7 +191,7 @@ export function MediaLibrary() {
         />
       )}
 
-      {pendingImport && <LibraryImportDialog prepared={pendingImport.preview} onCancel={() => setPendingImport(null)} onImport={() => void applyLibraryImport()} />}
+      {pendingImport && <LibraryImportDialog busy={busy === 'import'} prepared={pendingImport.preview} onCancel={() => { if (busy !== 'import') setPendingImport(null); }} onImport={() => void applyLibraryImport()} />}
     </main>
   );
 }

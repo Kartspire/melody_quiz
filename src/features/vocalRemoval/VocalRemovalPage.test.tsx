@@ -147,6 +147,8 @@ describe('VocalRemovalPage', () => {
 
     await act(async () => {
       root.render(withFeedback(<VocalRemovalPage active={false} />));
+    });
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
     });
 

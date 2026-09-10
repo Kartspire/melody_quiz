@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import packageJson from './package.json';
 
@@ -7,6 +7,9 @@ export default defineConfig({
     __APP_VERSION__: JSON.stringify(packageJson.version),
   },
   plugins: [react()],
+  test: {
+    setupFiles: ['./src/test/setup.ts'],
+  },
   server: {
     host: '127.0.0.1',
     port: 5173,

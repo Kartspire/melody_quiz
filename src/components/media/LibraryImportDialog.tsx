@@ -2,9 +2,9 @@ import type { PreparedMediaMerge } from '../../lib/melodyPackage';
 import { Dialog } from '../Dialog';
 import { ImportVerificationSummary } from '../ImportVerificationSummary';
 
-export function LibraryImportDialog({ prepared, onCancel, onImport }: { prepared: PreparedMediaMerge; onCancel: () => void; onImport: () => void }) {
+export function LibraryImportDialog({ prepared, onCancel, onImport, busy = false }: { prepared: PreparedMediaMerge; onCancel: () => void; onImport: () => void; busy?: boolean }) {
   return (
-    <Dialog eyebrow="Проверка завершена" title="Импорт медиатеки" onClose={onCancel} className="import-dialog">
+    <Dialog busy={busy} eyebrow="Проверка завершена" title="Импорт медиатеки" onClose={onCancel} className="import-dialog">
       <ImportVerificationSummary
         title="Медиатека готова к импорту"
         stats={prepared.stats}

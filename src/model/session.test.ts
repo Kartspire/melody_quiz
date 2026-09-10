@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { createGame, createInterRoundStage, createRound, createSession } from './defaults';
+import { createGame, createInterRoundStage, createRound, createRoundStage, createSession } from './defaults';
+import { transitionGameSession } from './games/domain/sessionTransitions';
 import { createCommonTheme4InterRound, createContinueLyricsInterRound } from '../interRounds/templates';
 import { normalizeGameConfig } from './migrations';
 import { isRoundComplete, reconcileSession } from './session';
 import type { GameConfig } from './types';
 
 describe('session helpers', () => {
+  it('preserves the winning selector after reloading a later round', () => {
+    const game = createGame('Reload');
+    const round = createRound(1);
+    game.rounds.push(round);
+    game.stages.push(createRoundStage(round.id));
+    let session = transitionGameSession(game, createSession(game), { type: 'nextStage' });
+    session = transitionGameSession(game, session, { type: 'openQuestion', questionId: round.categories[0].questions[0].id });
+    session = transitionGameSession(game, session, { type: 'awardTeam', teamId: game.teams[0].id });
+    session = transitionGameSession(game, session, { type: 'closeQuestion', completed: true });
+    expect(reconcileSession(game, session).selectingTeamId).toBe(game.teams[0].id);
+    expect(reconcileSession(game, { ...session, selectingTeamId: 'removed-team' }).selectingTeamId).toBe(game.teams[1].id);
+  });
+
   it('reconciles stale teams and question ids after a game was edited', () => {
     const game = createGame('Тест');
     const session = createSession(game);

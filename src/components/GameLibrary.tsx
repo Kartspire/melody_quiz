@@ -85,9 +85,10 @@ export function GameLibrary() {
     if (!pendingImport) return;
     try {
       setBusy('import');
-      const latestPrepared = await prepareGameImport(pendingImport.packageData, persistedState);
-      const nextState = finalizeGameImport(latestPrepared, persistedState, mode);
-      await persistedStateImportFx(nextState);
+      await persistedStateImportFx(async (current) => {
+        const prepared = await prepareGameImport(pendingImport.packageData, current);
+        return finalizeGameImport(prepared, current, mode);
+      });
       const title = pendingImport.packageData.game?.title || 'Игра';
       setPendingImport(null);
       screenChanged('library');
@@ -161,7 +162,7 @@ export function GameLibrary() {
         </section>
       )}
 
-      {pendingImport && <GameImportDialog prepared={pendingImport.preview} onCancel={() => setPendingImport(null)} onImport={(mode) => void applyImport(mode)} />}
+      {pendingImport && <GameImportDialog busy={busy === 'import'} prepared={pendingImport.preview} onCancel={() => { if (busy !== 'import') setPendingImport(null); }} onImport={(mode) => void applyImport(mode)} />}
     </main>
   );
 }

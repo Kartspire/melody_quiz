@@ -10,7 +10,10 @@
     "dev": "vite --host 127.0.0.1 --port 5173 --strictPort",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5173 --strictPort",
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "check": "npm run test && npm run build",
+    "test:browser": "vite --mode test-browser --host 127.0.0.1 --port 5185 --strictPort --open false"
   },
   "dependencies": {
     "effector": "^23.4.4",

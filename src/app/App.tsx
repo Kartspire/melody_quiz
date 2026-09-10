@@ -9,7 +9,7 @@ import {
   $storageReadOnly,
   $storageSaveStatus,
   screenChanged,
-  storageRetryRequested,
+  $stateReplacementPending,
   storageSaveRetryRequested,
 } from '../model/game';
 import type { Screen } from '../model/types';
@@ -23,8 +23,17 @@ import { SettingsPage } from '../components/SettingsPage';
 import { GameLaunchDialog } from '../components/GameLaunchDialog';
 import { exportAppBackup } from '../lib/appBackup';
 import { downloadBlob } from '../lib/download';
+import { StorageRecovery } from '../components/StorageRecovery';
 
 export function App() {
+  const replacing = useUnit($stateReplacementPending);
+  return <>
+    <div inert={replacing}><AppContent /></div>
+    {replacing && <div className="state-replacement-overlay" role="status">Применяем данные… Дождитесь завершения.</div>}
+  </>;
+}
+
+function AppContent() {
   const [screen, hydrated, activeGame, storageError, storageReadOnly, storageSaveStatus, persistedState] = useUnit([
     $screen,
     $hydrated,
@@ -56,14 +65,7 @@ export function App() {
 
   if (!hydrated) {
     if (storageError) {
-      return (
-        <div className="app-loader storage-recovery">
-          <strong>Не удалось безопасно открыть локальные данные</strong>
-          <span>{storageError}</span>
-          <button className="primary-button" onClick={() => storageRetryRequested()}>Повторить загрузку</button>
-          <small>Редактирование заблокировано, чтобы пустое состояние не перезаписало существующую базу.</small>
-        </div>
-      );
+      return <StorageRecovery message={storageError} />;
     }
     return <div className="app-loader"><div className="loader-disc" /><span>Загружаем библиотеку игр…</span></div>;
   }

@@ -19,10 +19,12 @@ export {
   $storageError,
   $storageReadOnly,
   $storageSaveStatus,
+  $stateReplacementPending,
   appStarted,
   persistedStateImported,
   persistedStateImportFx,
   storageRetryRequested,
+  storageRecoveryFx,
   storageSaveRetryRequested,
 } from './app/storage';
 

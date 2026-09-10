@@ -2,6 +2,7 @@ import { createId } from '../lib/ids';
 import { cloneInterRoundInstance } from '../interRounds/templates';
 import { canonicalizeAudioAsset, createContentAddressedAudioAsset } from '../lib/audio';
 import { DATA_LIMITS, GAME_POINTS_STEP } from './limits';
+import { captureStateWrite } from './core/writeAccess';
 import type {
   AudioAsset,
   Category,
@@ -140,7 +141,12 @@ function pickRandomTeamId(teams: Team[], random: () => number) {
   return teams[Math.floor(normalized * teams.length)]?.id ?? teams[0]?.id ?? null;
 }
 
-export const createAudioAsset = (file: File) => createContentAddressedAudioAsset(file);
+export const createAudioAsset = async (file: File) => {
+  const checkWrite = captureStateWrite();
+  const asset = await createContentAddressedAudioAsset(file);
+  checkWrite();
+  return asset;
+};
 
 export const createMediaTrack = (asset: AudioAsset, name = asset.name): MediaTrack => {
   const now = Date.now();

@@ -2,6 +2,7 @@ import { combine, createEffect, createEvent, createStore, sample } from 'effecto
 import {
   loadState,
   saveState,
+  restoreState,
   StorageConflictError,
   subscribeToExternalStorageChanges,
 } from '../../lib/storage';
@@ -14,6 +15,7 @@ import {
   $songs,
 } from '../core/state';
 import { normalizeSession, reconcileSession } from '../session';
+import { beginStateReplacement } from '../core/writeAccess';
 import type { GameSession, PersistedState } from '../types';
 import {
   deriveStorageSaveStatus,
@@ -43,30 +45,63 @@ let saveTimer: number | undefined;
 let priorityFlushQueued = false;
 let lastSessionActivity = sessionActivitySnapshot($sessions.getState());
 
-export const persistedStateImportFx = createEffect(async (state: PersistedState) => {
-  cancelScheduledSave();
-  await saveState(state);
-  return state;
+type StateImport = PersistedState | ((current: PersistedState) => PersistedState | Promise<PersistedState>);
+
+export const persistedStateImportFx = createEffect(async (input: StateImport) => {
+  if (!$hydrated.getState() || $storageReadOnly.getState()) {
+    throw new Error('Сначала загрузите актуальные локальные данные.');
+  }
+  return replaceState(input, false);
 });
 
+/** Only available after hydration has failed; rewrites all stores atomically. */
+export const storageRecoveryFx = createEffect(async (state: PersistedState) => {
+  if ($hydrated.getState() || loadFx.pending.getState() || !$storageError.getState()) {
+    throw new Error('Восстановление доступно после ошибки загрузки локальных данных.');
+  }
+  return replaceState(state, true);
+});
+
+export const $stateReplacementPending = combine(
+  persistedStateImportFx.pending, storageRecoveryFx.pending, (importing, recovering) => importing || recovering,
+);
+
+async function replaceState(input: StateImport, recovery: boolean) {
+  const replacement = beginStateReplacement();
+  cancelScheduledSave();
+  try {
+    const state = typeof input === 'function' ? await input($persistedState.getState()) : input;
+    await (recovery ? restoreState(state) : saveState(state));
+    replacement.apply(() => persistedStateImported(state));
+    return state;
+  } finally {
+    replacement.release();
+    // Failed imports must not strand an earlier unsaved editor snapshot.
+    if ($pendingPersistedState.getState() && !$storageReadOnly.getState()) scheduleSaveFx();
+  }
+}
+
 export const $storageError = createStore<string | null>(null)
-  .on(loadFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось открыть локальное хранилище.'))
+  .on(loadFx.failData, (_, error) => `Не удалось открыть локальное хранилище. ${error instanceof Error ? error.message : ''} Повторите загрузку или выберите резервную копию для восстановления.`)
   .on(saveFx.failData, (_, error) => storageErrorMessage(error, 'Не удалось сохранить изменения в локальное хранилище.'))
   .on(persistedStateImportFx.failData, (current, error) => error instanceof StorageConflictError
     ? storageErrorMessage(error, 'Не удалось применить импортированные данные.')
     : current)
   .on(externalStorageChangeDetected, () => 'Данные были изменены в другой вкладке. Эта вкладка переведена в режим только чтения, чтобы не затереть более новую версию. Сохраните аварийную резервную копию при необходимости и перезагрузите страницу.')
   .on(loadFx.done, () => null)
+  .on(storageRecoveryFx.done, () => null)
   .on(storageErrorCleared, () => null);
 
 export const $storageReadOnly = createStore(false)
   .on(externalStorageChangeDetected, () => true)
   .on(saveFx.failData, readOnlyAfterStorageFailure)
   .on(persistedStateImportFx.failData, readOnlyAfterStorageFailure)
+  .on(storageRecoveryFx.done, () => false)
   .on(loadFx.done, () => false);
 
 export const $hydrated = createStore(false)
   .on(loadFx.done, () => true)
+  .on(storageRecoveryFx.done, () => true)
   .on(loadFx.fail, () => false);
 
 /**
@@ -76,14 +111,15 @@ export const $hydrated = createStore(false)
 export const $pendingPersistedState = createStore<PersistedState | null>(null)
   .on(persistedStateChanged, (_, state) => state)
   .on(saveFx.done, (pending, { params }) => pendingAfterSuccessfulSave(pending, params))
-  .on(persistedStateImportFx.doneData, () => null);
+  .on(persistedStateImported, () => null);
 
 export const $storageDirty = $pendingPersistedState.map((state) => state !== null);
 
 const $saveOutcome = createStore<StorageSaveOutcome>('idle')
   .on(saveFx.done, () => 'saved')
   .on(saveFx.fail, () => 'error')
-  .on(persistedStateImportFx.done, () => 'saved');
+  .on(persistedStateImportFx.done, () => 'saved')
+  .on(storageRecoveryFx.done, () => 'saved');
 
 const $storageSaving = combine(saveFx.pending, persistedStateImportFx.pending, (saving, importing) => saving || importing);
 
@@ -92,7 +128,13 @@ export const $storageSaveStatus = combine(
   deriveStorageSaveStatus,
 );
 
-sample({ clock: [appStarted, storageRetryRequested], target: loadFx });
+sample({
+  clock: [appStarted, storageRetryRequested],
+  source: combine(loadFx.pending, $stateReplacementPending, (loading, replacing) => loading || replacing),
+  filter: (busy) => !busy,
+  fn: () => undefined,
+  target: loadFx,
+});
 
 $games
   .on(loadFx.doneData, (_, state) => state.games)
@@ -141,8 +183,6 @@ export const $persistedState = combine(
   },
 );
 
-sample({ clock: persistedStateImportFx.doneData, target: persistedStateImported });
-
 sample({
   clock: [saveFx.done, persistedStateImportFx.done],
   source: $storageReadOnly,
@@ -152,8 +192,8 @@ sample({
 
 sample({
   clock: $persistedState.updates,
-  source: combine({ state: $persistedState, hydrated: $hydrated, readOnly: $storageReadOnly }),
-  filter: ({ hydrated, readOnly }) => hydrated && !readOnly,
+  source: combine({ state: $persistedState, hydrated: $hydrated, readOnly: $storageReadOnly, replacing: $stateReplacementPending }),
+  filter: ({ hydrated, readOnly, replacing }) => hydrated && !readOnly && !replacing,
   fn: ({ state }) => state,
   target: persistedStateChanged,
 });
@@ -170,8 +210,8 @@ sample({ clock: persistedStateChanged, target: scheduleSaveFx });
 
 sample({
   clock: saveLatestRequested,
-  source: combine({ pending: $pendingPersistedState, readOnly: $storageReadOnly }),
-  filter: ({ pending, readOnly }) => Boolean(pending && !readOnly),
+  source: combine({ pending: $pendingPersistedState, readOnly: $storageReadOnly, replacing: $stateReplacementPending }),
+  filter: ({ pending, readOnly, replacing }) => Boolean(pending && !readOnly && !replacing),
   fn: ({ pending }) => pending!,
   target: saveFx,
 });
@@ -215,7 +255,7 @@ function cancelScheduledSave() {
 }
 
 function flushPendingSave() {
-  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState()) return;
+  if (typeof window === 'undefined' || !$hydrated.getState() || $storageReadOnly.getState() || $stateReplacementPending.getState()) return;
   cancelScheduledSave();
   const pending = $pendingPersistedState.getState();
   if (pending) void saveFx(pending);
@@ -226,7 +266,7 @@ function handleVisibilityChange() {
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (!$storageDirty.getState() || $storageReadOnly.getState()) return;
+  if ((!$storageDirty.getState() && !$stateReplacementPending.getState()) || $storageReadOnly.getState()) return;
   event.preventDefault();
   event.returnValue = '';
 }

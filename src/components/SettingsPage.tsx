@@ -164,6 +164,7 @@ export function SettingsPage() {
 
       {restorePreview && (
         <Dialog
+          busy={backupBusy === 'restore'}
           eyebrow="Полное восстановление"
           title="Заменить локальные данные?"
           description="Архив успешно проверен. Восстановление полностью заменит текущие игры, медиатеку и сохранённые партии данными из резервной копии."

@@ -6,15 +6,17 @@ export function GameImportDialog({
   prepared,
   onCancel,
   onImport,
+  busy = false,
 }: {
   prepared: PreparedGameImport;
   onCancel: () => void;
   onImport: (mode: GameConflictMode) => void;
+  busy?: boolean;
 }) {
   const game = prepared.package.game!;
 
   return (
-    <Dialog eyebrow="Проверка завершена" title={`Импорт «${game.title}»`} onClose={onCancel} className="import-dialog">
+    <Dialog busy={busy} eyebrow="Проверка завершена" title={`Импорт «${game.title}»`} onClose={onCancel} className="import-dialog">
       <ImportVerificationSummary
         title={`Игра «${game.title}» готова к импорту`}
         stats={prepared.media.stats}
