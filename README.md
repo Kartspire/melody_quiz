@@ -11,11 +11,12 @@
 - полная резервная копия приложения вместе с прогрессом партий;
 - browser-only нарезка аудио и создание instrumental-версии через HTDemucs;
 - автоматическое сохранение с защитой от конфликтов между вкладками;
-- восстановление игровой сессии после перезагрузки страницы.
+- восстановление игровой сессии после перезагрузки страницы;
+- безопасное восстановление из полной резервной копии при ошибке чтения локального хранилища.
 
 ## Запуск
 
-Требуется Node.js 18+. Для браузерного E2E quality gate используется Node.js 22+ и установленный Chrome/Chromium.
+Требуется Node.js 18+.
 
 ```bash
 npm ci
@@ -27,20 +28,17 @@ npm run dev
 ## Основные команды
 
 ```bash
-npm run dev                # локальная разработка
-npm run typecheck          # строгий TypeScript
-npm run lint               # архитектурные и AST quality gates
-npm run format:check       # LF / trailing whitespace / EOF hygiene
-npm run format             # автоматически исправить format hygiene
-npm test                   # unit + regression tests
-npm run coverage:critical  # контракт тестов для критичных модулей
-npm run build              # production build
-npm run e2e                # build + реальный browser/IndexedDB smoke test
-npm run e2e:smoke          # только smoke test для уже собранного dist
-npm run check              # основной CI quality gate
+npm run dev           # локальная разработка
+npm run typecheck     # проверка TypeScript
+npm test              # unit + regression tests
+npm run build         # TypeScript + production build
+npm run check         # основной локальный quality gate: tests + build
+npm run test:browser  # сервер для ручных browser/IndexedDB regression checks
 ```
 
-`npm run lint` — намеренно проектный AST-linter поверх TypeScript: он проверяет не только синтаксис, но и архитектурные правила приложения (циклические импорты, `window.alert/confirm`, `.getState()` в UI, слишком крупные UI-модули и debug-код). `.prettierrc.json` и `.editorconfig` задают единый формат для редактора; CI дополнительно проверяет форматную гигиену без добавления новых npm-зависимостей.
+`npm run test:browser` запускает Vite в отдельном режиме на `http://127.0.0.1:5185`. После запуска откройте `http://127.0.0.1:5185/tests/browser/storage.html` и нажмите «Запустить проверки».
+
+Браузерные проверки используют отдельную базу `melody-quiz-test-db` и не изменяют рабочую базу приложения. Они проверяют реальные транзакции IndexedDB, восстановление после повреждения данных и конфликт записи между двумя вкладками. Эти проверки пока запускаются вручную и не входят в `npm run check`.
 
 ## Архитектура данных
 
@@ -60,13 +58,16 @@ IndexedDB
 
 Игровая логика отделена от Effector orchestration: редактирование конфигурации и переходы сессии находятся в pure domain-функциях, а Effector связывает команды с UI и persistence.
 
-## Документация
+## Надёжность хранения
 
-- [Архитектура](docs/architecture.md)
-- [Хранилище и резервные копии](docs/storage.md)
-- [Аудио-пайплайн](docs/audio.md)
-- [Формат `.melody`](docs/package-format.md)
-- [Тестирование и CI](docs/testing.md)
+Импорт и полное восстановление выполняются как исключительные операции: на время замены состояния пользовательские записи блокируются, а запущенные до импорта асинхронные операции не могут дописать устаревшие данные после завершения замены.
+
+Если первичная загрузка IndexedDB завершается ошибкой, приложение открывает отдельный экран восстановления. Полная резервная копия сначала проверяется, затем все разделы состояния заменяются одной транзакцией.
+
+## Документация проекта
+
+- [Межраунды](INTER_ROUNDS.md)
+- [История крупных исправлений и миграций](REVIEW_FIXES.md)
 
 ## Перед важной игрой
 
