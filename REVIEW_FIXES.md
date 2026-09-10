@@ -1,6 +1,18 @@
 # Исправления по полному ревью
 
 
+## v1.7 — Точный монтаж и сборка миксов
+
+- Добавлен ripple editing: вставка создаёт место на дорожке, при попадании внутрь клипа он split-ится; ripple-delete стягивает материал справа.
+- Реализован настоящий snapping к playhead, маркерам, началу/концу других клипов с визуальной направляющей; 50-мс сетка используется как fallback.
+- Добавлены persistent-маркеры таймлайна и автоматический crossfade для пересекающихся клипов; fade in/out можно менять handles прямо на клипе.
+- Timeline поддерживает `Ctrl/Cmd`/`Shift` multi-select, групповое горизонтальное перемещение и clipboard copy/paste с сохранением относительного времени и дорожек.
+- Добавлены автопрокрутка за playhead и `Ctrl/Cmd+колесо` zoom относительно позиции указателя.
+- Waveform переведён на общий кеш из 4096 peak buckets на исходный `AudioAsset`, чтобы несколько клипов одного трека не сканировали весь `AudioBuffer` повторно.
+- `AudioEditorPage` декомпозирован: transport, timeline, clip inspector, history и playback вынесены в отдельные модули.
+- Добавлены regression-тесты ripple/snapping/group move/clipboard/crossfade/markers, waveform peaks и расчёта Web Audio playback window.
+- Поле `AudioProject.markers` сделано опциональным для обратной совместимости с проектами v1.6; версия persisted state/IndexedDB не менялась.
+
 ## v1.6 — Недеструктивный аудиоредактор
 
 - Добавлен отдельный экран «Аудиоредактор» с несколькими монтажными проектами.

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { AudioAsset } from '../../model/types';
-import { decodeAudioAsset } from './audioBuffers';
+import { getWaveformPeaks } from './waveformPeaks';
 
 const MAX_WAVEFORM_BITMAP_WIDTH = 4096;
 
@@ -13,7 +13,7 @@ export function WaveformCanvas({ asset, sourceStartMs, sourceEndMs }: { asset?: 
     if (!canvas || !asset) return;
 
     const draw = async () => {
-      const buffer = await decodeAudioAsset(asset);
+      const waveform = await getWaveformPeaks(asset);
       if (cancelled || !ref.current) return;
       const target = ref.current;
       const rect = target.getBoundingClientRect();
@@ -24,19 +24,21 @@ export function WaveformCanvas({ asset, sourceStartMs, sourceEndMs }: { asset?: 
       const ctx = target.getContext('2d');
       if (!ctx) return;
       ctx.clearRect(0, 0, width, height);
-      const data = buffer.getChannelData(0);
-      const startSample = Math.max(0, Math.floor(sourceStartMs / 1000 * buffer.sampleRate));
-      const endSample = Math.min(data.length, Math.ceil(sourceEndMs / 1000 * buffer.sampleRate));
-      const span = Math.max(1, endSample - startSample);
-      const step = Math.max(1, Math.floor(span / width));
+
+      const duration = Math.max(1, waveform.durationMs);
+      const startRatio = Math.max(0, Math.min(1, sourceStartMs / duration));
+      const endRatio = Math.max(startRatio, Math.min(1, sourceEndMs / duration));
+      const peakStart = Math.floor(startRatio * waveform.peaks.length);
+      const peakEnd = Math.max(peakStart + 1, Math.ceil(endRatio * waveform.peaks.length));
+      const peakSpan = Math.max(1, peakEnd - peakStart);
       const center = height / 2;
       ctx.fillStyle = 'rgba(255,255,255,.62)';
+
       for (let x = 0; x < width; x += 1) {
-        const from = startSample + x * step;
-        if (from >= endSample) break;
-        const to = Math.min(endSample, from + step);
+        const from = peakStart + Math.floor(x / width * peakSpan);
+        const to = Math.min(peakEnd, Math.max(from + 1, peakStart + Math.ceil((x + 1) / width * peakSpan)));
         let peak = 0;
-        for (let index = from; index < to; index += 1) peak = Math.max(peak, Math.abs(data[index] ?? 0));
+        for (let index = from; index < to; index += 1) peak = Math.max(peak, waveform.peaks[index] ?? 0);
         const bar = Math.max(1, peak * height * 0.9);
         ctx.fillRect(x, center - bar / 2, 1, bar);
       }

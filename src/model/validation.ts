@@ -321,6 +321,24 @@ function assertValidAudioProject(project: AudioProject): void {
   if (!isBoundedText(project.name, DATA_LIMITS.text.audioProjectName) || !project.name.trim()) throw new Error(`Аудиопроект «${project.id}» не содержит корректного названия.`);
   if (!isValidTimestamp(project.createdAt) || !isValidTimestamp(project.updatedAt)) throw new Error(`Аудиопроект «${project.name}» содержит некорректную дату.`);
   if (!Array.isArray(project.lanes) || project.lanes.length < 1 || project.lanes.length > 32) throw new Error(`Аудиопроект «${project.name}» содержит некорректное количество дорожек.`);
+  if (project.markers !== undefined) {
+    if (!Array.isArray(project.markers) || project.markers.length > 500) throw new Error(`Аудиопроект «${project.name}» содержит некорректные маркеры.`);
+    const markerIds = new Set<string>();
+    for (const marker of project.markers) {
+      if (
+        !marker
+        || !isBoundedText(marker.id, DATA_LIMITS.text.id)
+        || !marker.id
+        || markerIds.has(marker.id)
+        || !isBoundedText(marker.label, DATA_LIMITS.text.audioLaneName)
+        || !marker.label.trim()
+        || !Number.isFinite(marker.positionMs)
+        || marker.positionMs < 0
+        || marker.positionMs > MAX_AUDIO_EDITOR_TIME_MS
+      ) throw new Error(`Аудиопроект «${project.name}» содержит повреждённый маркер.`);
+      markerIds.add(marker.id);
+    }
+  }
   const laneIds = new Set<string>();
   const clipIds = new Set<string>();
   let clipCount = 0;

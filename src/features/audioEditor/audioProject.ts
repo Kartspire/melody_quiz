@@ -20,6 +20,7 @@ export function createAudioProject(name = 'Новый монтаж'): AudioProje
     id: createId('audio-project'),
     name: name.trim().slice(0, 200) || 'Новый монтаж',
     lanes: [createAudioEditorLane(0)],
+    markers: [],
     createdAt: now,
     updatedAt: now,
   };

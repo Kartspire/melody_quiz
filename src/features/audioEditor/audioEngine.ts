@@ -111,14 +111,9 @@ function scheduleClip(
   contextStartTime: number,
   sources: AudioBufferSourceNode[],
 ) {
-  const clipEndMs = getClipTimelineEndMs(clip);
-  const playFromMs = Math.max(fromMs, clip.timelineStartMs);
-  if (playFromMs >= clipEndMs) return;
-
-  const sourceOffsetMs = clip.sourceStartMs + (playFromMs - clip.timelineStartMs) * clip.playbackRate;
-  const maxSourceEndMs = Math.min(clip.sourceEndMs, buffer.duration * 1000);
-  const sourceDurationMs = maxSourceEndMs - sourceOffsetMs;
-  if (sourceDurationMs <= 0) return;
+  const window = getClipPlaybackWindow(clip, fromMs, buffer.duration * 1000);
+  if (!window) return;
+  const { playFromMs, sourceOffsetMs, sourceDurationMs, timelineDurationMs } = window;
 
   const source = context.createBufferSource();
   const gain = context.createGain();
@@ -128,7 +123,6 @@ function scheduleClip(
 
   const delaySeconds = Math.max(0, playFromMs - fromMs) / 1000;
   const startTime = contextStartTime + delaySeconds;
-  const timelineDurationMs = sourceDurationMs / clip.playbackRate;
   const endTime = startTime + timelineDurationMs / 1000;
   const baseGain = dbToGain(clip.gainDb);
   const clipTimelineDurationMs = getClipTimelineDurationMs(clip);
@@ -152,6 +146,22 @@ function scheduleClip(
 
   source.start(startTime, sourceOffsetMs / 1000, sourceDurationMs / 1000);
   sources.push(source);
+}
+
+export function getClipPlaybackWindow(clip: AudioClip, fromMs: number, bufferDurationMs: number) {
+  const clipEndMs = getClipTimelineEndMs(clip);
+  const playFromMs = Math.max(fromMs, clip.timelineStartMs);
+  if (playFromMs >= clipEndMs) return null;
+  const sourceOffsetMs = clip.sourceStartMs + (playFromMs - clip.timelineStartMs) * clip.playbackRate;
+  const maxSourceEndMs = Math.min(clip.sourceEndMs, Math.max(0, bufferDurationMs));
+  const sourceDurationMs = maxSourceEndMs - sourceOffsetMs;
+  if (sourceDurationMs <= 0) return null;
+  return {
+    playFromMs,
+    sourceOffsetMs,
+    sourceDurationMs,
+    timelineDurationMs: sourceDurationMs / clip.playbackRate,
+  };
 }
 
 function fadeFactor(clip: AudioClip, positionMs: number, clipEndMs: number) {

@@ -104,4 +104,23 @@ describe('game validation', () => {
     expect(getGameStorageIssues(game).some((issue) => issue.includes('структура задания'))).toBe(true);
   });
 
+  it('accepts v1.6 audio projects without markers and validates new marker data', () => {
+    const now = Date.now();
+    const state = emptyState();
+    state.audioProjects = [{
+      id: 'audio-project-legacy',
+      name: 'Legacy montage',
+      lanes: [{ id: 'lane-1', name: 'Дорожка 1', muted: false, solo: false, clips: [] }],
+      createdAt: now,
+      updatedAt: now,
+    }];
+    expect(() => assertValidPersistedState(state)).not.toThrow();
+
+    state.audioProjects[0]!.markers = [{ id: 'marker-1', positionMs: 1_500, label: 'Припев' }];
+    expect(() => assertValidPersistedState(state)).not.toThrow();
+
+    state.audioProjects[0]!.markers = [{ id: 'marker-1', positionMs: -1, label: 'Припев' }];
+    expect(() => assertValidPersistedState(state)).toThrow(/маркер/i);
+  });
+
 });

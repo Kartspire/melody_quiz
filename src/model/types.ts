@@ -37,10 +37,18 @@ export type AudioEditorLane = {
   clips: AudioClip[];
 };
 
+export type AudioProjectMarker = {
+  id: string;
+  positionMs: number;
+  label: string;
+};
+
 export type AudioProject = {
   id: string;
   name: string;
   lanes: AudioEditorLane[];
+  /** Optional for backwards compatibility with projects created before v1.7. */
+  markers?: AudioProjectMarker[];
   createdAt: number;
   updatedAt: number;
 };
