@@ -280,6 +280,7 @@ function TimelineClip({
       return;
     }
 
+    const collapseSelectionOnClick = action === 'move' && selected && selectedClipIds.length > 1;
     const dragIds = action === 'move' && selected ? [...selectedClipIds] : [clip.id];
     if (!selected || action !== 'move') onSelectionChange(action === 'move' ? dragIds : [clip.id], clip.id, laneId);
 
@@ -337,7 +338,11 @@ function TimelineClip({
       target.removeEventListener('pointerup', up);
       target.removeEventListener('pointercancel', up);
       onSnapGuideChange(null);
-      if (changed) onProjectChange(finalProject, { recordHistory: true, historySnapshot: snapshot });
+      if (changed) {
+        onProjectChange(finalProject, { recordHistory: true, historySnapshot: snapshot });
+      } else if (collapseSelectionOnClick) {
+        onSelectionChange([clip.id], clip.id, laneId);
+      }
     };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up);

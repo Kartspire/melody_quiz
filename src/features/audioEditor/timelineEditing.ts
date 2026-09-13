@@ -12,6 +12,7 @@ import {
 export const AUDIO_EDITOR_GRID_MS = 50;
 export const AUDIO_EDITOR_SNAP_THRESHOLD_PX = 8;
 export const AUDIO_EDITOR_MAX_MARKERS = 500;
+export const AUDIO_EDITOR_DEFAULT_CROSSFADE_MS = 1_000;
 
 export type TimelineSnapKind = 'playhead' | 'clip-start' | 'clip-end' | 'marker' | 'grid';
 
@@ -299,17 +300,26 @@ export function applyAutoCrossfades(project: AudioProject, laneIds?: ReadonlySet
   });
 }
 
-export function applyCrossfadeToSelection(project: AudioProject, clipIds: readonly string[]): AudioProject | null {
-  if (clipIds.length !== 2) return null;
+export function applyCrossfadeToSelection(
+  project: AudioProject,
+  clipIds: readonly string[],
+  durationMs = AUDIO_EDITOR_DEFAULT_CROSSFADE_MS,
+): AudioProject | null {
+  if (clipIds.length < 2) return null;
   const ids = new Set(clipIds);
-  for (const lane of project.lanes) {
-    const clips = lane.clips.filter((clip) => ids.has(clip.id)).sort((a, b) => a.timelineStartMs - b.timelineStartMs);
-    if (clips.length !== 2) continue;
-    const overlap = getClipTimelineEndMs(clips[0]!) - clips[1]!.timelineStartMs;
-    if (overlap <= 0) return null;
-    return applyAutoCrossfades(project, new Set([lane.id]));
-  }
-  return null;
+  let selectedCount = 0;
+  const normalizedDuration = Math.max(0, Number.isFinite(durationMs) ? durationMs : AUDIO_EDITOR_DEFAULT_CROSSFADE_MS);
+  const lanes = project.lanes.map((lane) => ({
+    ...lane,
+    clips: lane.clips.map((clip) => {
+      if (!ids.has(clip.id)) return clip;
+      selectedCount += 1;
+      const clipDuration = getClipTimelineDurationMs(clip);
+      const fadeMs = Math.min(normalizedDuration, clipDuration / 2);
+      return normalizeAudioClip({ ...clip, fadeInMs: fadeMs, fadeOutMs: fadeMs });
+    }),
+  }));
+  return selectedCount >= 2 ? { ...project, lanes } : null;
 }
 
 export function addProjectMarker(project: AudioProject, positionMs: number, label?: string): { project: AudioProject; marker: AudioProjectMarker } | null {

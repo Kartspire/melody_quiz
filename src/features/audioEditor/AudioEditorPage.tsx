@@ -41,6 +41,7 @@ import { AudioEditorClipInspector } from './AudioEditorClipInspector';
 import { AudioEditorGuide, AudioEditorHelpTip } from './AudioEditorGuide';
 import { AudioEditorQuickStart } from './AudioEditorQuickStart';
 import { hasSeenAudioEditorGuide, markAudioEditorGuideSeen, readAudioEditorMode, writeAudioEditorMode, type AudioEditorMode } from './audioEditorUi';
+import { getAudioEditorKeyboardCommand } from './audioEditorKeyboard';
 
 const DEFAULT_PIXELS_PER_SECOND = 36;
 
@@ -77,7 +78,7 @@ export function AudioEditorPage() {
   }, [notify]);
   const playback = useAudioEditorPlayback({ project, mediaTracks, audioAssets, onError: handlePlaybackError });
   const historyStatus = history.status(project?.id);
-  const canCrossfade = useMemo(() => Boolean(project && applyCrossfadeToSelection(project, selectedClipIds)), [project, selectedClipIds]);
+  const canCrossfade = selectedClipIds.length >= 2;
   const effectiveRipple = editorMode === 'simple' ? true : ripple;
   const clipCount = project?.lanes.reduce((total, lane) => total + lane.clips.length, 0) ?? 0;
 
@@ -275,8 +276,7 @@ export function AudioEditorPage() {
       clips: lane.clips.flatMap((clip) => clip.id === activeClip.clip.id ? split : [clip]),
     } : lane);
     replaceProject({ ...project, lanes });
-    const preserved = selectedClipIds.filter((id) => id !== activeClip.clip.id);
-    setSelectedClipIds([...preserved, split[0].id, split[1].id]);
+    setSelectedClipIds([split[1].id]);
     setActiveClipId(split[1].id);
   };
 
@@ -284,7 +284,7 @@ export function AudioEditorPage() {
     if (!project) return;
     const next = applyCrossfadeToSelection(project, selectedClipIds);
     if (!next) {
-      notify({ kind: 'info', message: 'Выберите два пересекающихся фрагмента на одной дорожке.' });
+      notify({ kind: 'info', message: 'Выберите минимум два фрагмента для Crossfade.' });
       return;
     }
     replaceProject(next);
@@ -341,41 +341,23 @@ export function AudioEditorPage() {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
-      const key = event.key.toLowerCase();
-      const modifier = event.ctrlKey || event.metaKey;
-      if (modifier && key === 'z') {
-        event.preventDefault();
-        if (event.shiftKey) redo(); else undo();
-        return;
-      }
-      if (modifier && key === 'y') {
-        event.preventDefault();
-        redo();
-        return;
-      }
-      if (editorMode === 'advanced' && modifier && key === 'c' && selectedClipIds.length > 0) {
-        event.preventDefault();
-        copySelection();
-        return;
-      }
-      if (editorMode === 'advanced' && modifier && key === 'v' && clipboard) {
-        event.preventDefault();
-        pasteClipboard();
-        return;
-      }
-      if (event.code === 'Space') {
-        event.preventDefault();
-        if (!busy) void playback.toggle();
-        return;
-      }
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClipIds.length > 0) {
-        event.preventDefault();
-        deleteSelection();
-        return;
-      }
-      if (key === 's' && activeClip) {
-        event.preventDefault();
-        splitActiveClip();
+      const command = getAudioEditorKeyboardCommand(event, {
+        advanced: editorMode === 'advanced',
+        hasSelection: selectedClipIds.length > 0,
+        hasClipboard: Boolean(clipboard),
+        hasActiveClip: Boolean(activeClip),
+      });
+      if (!command) return;
+      event.preventDefault();
+
+      switch (command) {
+        case 'undo': undo(); break;
+        case 'redo': redo(); break;
+        case 'copy': copySelection(); break;
+        case 'paste': pasteClipboard(); break;
+        case 'toggle-playback': if (!busy) void playback.toggle(); break;
+        case 'delete-selection': deleteSelection(); break;
+        case 'split': splitActiveClip(); break;
       }
     };
     window.addEventListener('keydown', handleKeyDown);

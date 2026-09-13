@@ -78,7 +78,7 @@ export function AudioEditorTransport({
             <button className="secondary-button" title="Поставить метку в позиции курсора" onClick={onAddMarker}>+ Маркер</button>
             <button className="secondary-button" title="Скопировать выбранные фрагменты (Ctrl/Cmd+C)" disabled={selectedCount === 0} onClick={onCopy}>Копировать</button>
             <button className="secondary-button" title="Вставить скопированные фрагменты в позицию курсора (Ctrl/Cmd+V)" disabled={!canPaste} onClick={onPaste}>Вставить</button>
-            <button className="secondary-button" title="Создать плавный переход между двумя выбранными пересекающимися фрагментами" disabled={!canCrossfade} onClick={onCrossfade}>Crossfade</button>
+            <button className="secondary-button" title="Применить Fade In и Fade Out по 1 секунде ко всем выбранным фрагментам. Положение и дорожка не важны." disabled={!canCrossfade} onClick={onCrossfade}>Crossfade 1 с</button>
             <span className="audio-editor-selection-summary">{selectedCount > 0 ? `Выбрано: ${selectedCount}` : 'Фрагменты не выбраны'}</span>
           </div>
           <div className="audio-editor-shortcuts" aria-label="Горячие клавиши аудиоредактора">

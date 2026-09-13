@@ -108,12 +108,19 @@ describe('audio editor timeline editing', () => {
     expect(second.timelineStartMs).toBe(5_500);
   });
 
-  it('creates an automatic equal-power-like overlap window through paired fades', () => {
-    const source = project([lane('lane-1', [clip('a', 0, 2_000), clip('b', 1_500, 2_000)])]);
-    const result = applyCrossfadeToSelection(source, ['a', 'b']);
+  it('applies a default one-second crossfade to every selected clip regardless of lane or overlap', () => {
+    const source = project([
+      lane('lane-1', [clip('a', 0, 4_000)]),
+      lane('lane-2', [clip('b', 12_000, 4_000), clip('c', 20_000, 1_000)]),
+    ]);
+    const result = applyCrossfadeToSelection(source, ['a', 'b', 'c']);
     expect(result).not.toBeNull();
-    expect(result!.lanes[0]!.clips.find((item) => item.id === 'a')!.fadeOutMs).toBe(500);
-    expect(result!.lanes[0]!.clips.find((item) => item.id === 'b')!.fadeInMs).toBe(500);
+    expect(result!.lanes[0]!.clips.find((item) => item.id === 'a')!.fadeInMs).toBe(1_000);
+    expect(result!.lanes[0]!.clips.find((item) => item.id === 'a')!.fadeOutMs).toBe(1_000);
+    expect(result!.lanes[1]!.clips.find((item) => item.id === 'b')!.fadeInMs).toBe(1_000);
+    expect(result!.lanes[1]!.clips.find((item) => item.id === 'b')!.fadeOutMs).toBe(1_000);
+    expect(result!.lanes[1]!.clips.find((item) => item.id === 'c')!.fadeInMs).toBe(500);
+    expect(result!.lanes[1]!.clips.find((item) => item.id === 'c')!.fadeOutMs).toBe(500);
   });
 
   it('adds persistent markers to the project', () => {

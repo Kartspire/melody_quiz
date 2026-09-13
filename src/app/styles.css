@@ -2261,6 +2261,57 @@ p { color: var(--muted); line-height: 1.6; }
 .audio-editor-field { display: grid; gap: 5px; }
 .audio-editor-field input,
 .audio-editor-field select { width: 100%; }
+.audio-editor-volume-field {
+  display: grid;
+  grid-column: span 2;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(15,23,42,.42);
+}
+.audio-editor-volume-field__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.audio-editor-volume-field__header > span { display: flex; align-items: center; font-size: 11px; font-weight: 700; }
+.audio-editor-volume-field__header output {
+  min-width: 58px;
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 900;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.audio-editor-volume-field > input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: ew-resize;
+}
+.audio-editor-volume-field__scale {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+.audio-editor-volume-field__scale span:nth-child(2) { text-align: center; }
+.audio-editor-volume-field__scale span:last-child { text-align: right; }
+.audio-editor-volume-reset {
+  justify-self: start;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: #93c5fd;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+.audio-editor-volume-reset:hover:not(:disabled) { color: #bfdbfe; text-decoration: underline; }
+.audio-editor-volume-reset:disabled { color: var(--muted); cursor: default; opacity: .55; }
 .audio-editor-render-card { justify-content: space-between; padding: 14px; }
 .audio-editor-render-card > div:first-child { display: grid; gap: 4px; }
 .audio-editor-render-card span { color: var(--muted); font-size: 12px; }
@@ -2287,6 +2338,7 @@ p { color: var(--muted); line-height: 1.6; }
   .audio-editor-transport > input[type="range"] { order: 5; flex-basis: 100%; }
   .audio-editor-timeline-shell { grid-template-columns: 125px minmax(0, 1fr); }
   .audio-editor-inspector-grid { grid-template-columns: 1fr; }
+  .audio-editor-volume-field { grid-column: span 1; }
   .audio-editor-render-actions { justify-content: stretch; }
   .audio-editor-render-actions button { flex: 1; }
 }
