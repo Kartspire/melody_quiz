@@ -4,6 +4,7 @@ import { getClipTimelineDurationMs, getClipTimelineEndMs, getProjectDurationMs, 
 import { WaveformCanvas } from './WaveformCanvas';
 import { getProjectMarkers, moveClips, snapSelectionDelta, snapTimelinePosition, trimClipEnd, trimClipStart } from './timelineEditing';
 import { cloneAudioProject } from './useAudioEditorHistory';
+import type { AudioEditorMode } from './audioEditorUi';
 
 const MIN_ZOOM = 16;
 const MAX_ZOOM = 180;
@@ -14,6 +15,7 @@ type ProjectChangeOptions = {
 };
 
 export function AudioEditorTimeline({
+  mode,
   project,
   trackById,
   assetById,
@@ -33,6 +35,7 @@ export function AudioEditorTimeline({
   onZoomChange,
   onRemoveMarker,
 }: {
+  mode: AudioEditorMode;
   project: AudioProject;
   trackById: Map<string, MediaTrack>;
   assetById: Map<string, AudioAsset>;
@@ -93,12 +96,18 @@ export function AudioEditorTimeline({
         <div className="audio-editor-ruler-spacer" />
         {project.lanes.map((lane) => (
           <div key={lane.id} className="audio-editor-lane-control" onClick={() => onSelectLane(lane.id)}>
-            <input value={lane.name} maxLength={120} onChange={(event) => onRenameLane(lane.id, event.target.value)} />
-            <div>
-              <button className={lane.muted ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'muted'); }}>M</button>
-              <button className={lane.solo ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'solo'); }}>S</button>
-              <button className="audio-editor-mini" disabled={project.lanes.length <= 1 || lane.clips.length > 0} onClick={(event) => { event.stopPropagation(); onRemoveLane(lane.id); }}>×</button>
-            </div>
+            {mode === 'advanced' ? (
+              <>
+                <input aria-label="Название дорожки" value={lane.name} maxLength={120} onChange={(event) => onRenameLane(lane.id, event.target.value)} />
+                <div>
+                  <button title="Mute — заглушить эту дорожку" aria-label={`Заглушить дорожку ${lane.name}`} className={lane.muted ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'muted'); }}>M</button>
+                  <button title="Solo — слушать только Solo-дорожки" aria-label={`Solo для дорожки ${lane.name}`} className={lane.solo ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'solo'); }}>S</button>
+                  <button title={lane.clips.length > 0 ? 'Сначала удалите или перенесите фрагменты с дорожки' : 'Удалить пустую дорожку'} aria-label={`Удалить дорожку ${lane.name}`} className="audio-editor-mini" disabled={project.lanes.length <= 1 || lane.clips.length > 0} onClick={(event) => { event.stopPropagation(); onRemoveLane(lane.id); }}>×</button>
+                </div>
+              </>
+            ) : (
+              <div className="audio-editor-lane-control__simple"><strong>{lane.name}</strong><small className={lane.muted || lane.solo ? 'audio-editor-lane-status--warning' : undefined}>{lane.solo ? 'Solo включён · см. расширенный режим' : lane.muted ? 'Mute включён · см. расширенный режим' : lane.clips.length ? `${lane.clips.length} фрагм.` : 'Пусто'}</small></div>
+            )}
           </div>
         ))}
       </div>
@@ -115,12 +124,19 @@ export function AudioEditorTimeline({
           }}
         >
           <TimelineRuler
+            mode={mode}
             project={project}
             width={width}
             pixelsPerSecond={pixelsPerSecond}
             onSeek={onSeek}
             onRemoveMarker={onRemoveMarker}
           />
+          {project.lanes.every((lane) => lane.clips.length === 0) && (
+            <div className="audio-editor-timeline-empty">
+              <strong>Таймлайн пока пуст</strong>
+              <span>Выберите трек в блоке выше и нажмите «Добавить в монтаж».</span>
+            </div>
+          )}
           {project.lanes.map((lane) => (
             <div
               key={lane.id}
@@ -140,6 +156,7 @@ export function AudioEditorTimeline({
                 return (
                   <TimelineClip
                     key={clip.id}
+                    mode={mode}
                     clip={clip}
                     project={project}
                     laneId={lane.id}
@@ -160,7 +177,7 @@ export function AudioEditorTimeline({
             </div>
           ))}
 
-          {getProjectMarkers(project).map((marker) => (
+          {mode === 'advanced' && getProjectMarkers(project).map((marker) => (
             <div
               key={marker.id}
               className="audio-editor-marker-line"
@@ -177,7 +194,8 @@ export function AudioEditorTimeline({
   );
 }
 
-function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker }: {
+function TimelineRuler({ mode, project, width, pixelsPerSecond, onSeek, onRemoveMarker }: {
+  mode: AudioEditorMode;
   project: AudioProject;
   width: number;
   pixelsPerSecond: number;
@@ -195,7 +213,7 @@ function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker
       onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000);
     }}>
       {ticks.map((second) => <span key={second} style={{ left: second * pixelsPerSecond }}>{formatMs(second * 1000)}</span>)}
-      {getProjectMarkers(project).map((marker) => (
+      {mode === 'advanced' && getProjectMarkers(project).map((marker) => (
         <button
           key={marker.id}
           className="audio-editor-marker"
@@ -212,6 +230,7 @@ function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker
 }
 
 function TimelineClip({
+  mode,
   clip,
   project,
   laneId,
@@ -227,6 +246,7 @@ function TimelineClip({
   onProjectChange,
   onSnapGuideChange,
 }: {
+  mode: AudioEditorMode;
   clip: AudioClip;
   project: AudioProject;
   laneId: string;
@@ -248,10 +268,10 @@ function TimelineClip({
   const fadeInLeft = Math.min(width - 4, Math.max(0, clip.fadeInMs / 1000 * pixelsPerSecond));
   const fadeOutRight = Math.min(width - 4, Math.max(0, clip.fadeOutMs / 1000 * pixelsPerSecond));
 
-  const gesture = (event: ReactPointerEvent, mode: 'move' | 'left' | 'right' | 'fade-in' | 'fade-out') => {
+  const gesture = (event: ReactPointerEvent, action: 'move' | 'left' | 'right' | 'fade-in' | 'fade-out') => {
     event.stopPropagation();
     const modifier = event.ctrlKey || event.metaKey || event.shiftKey;
-    if (modifier && mode === 'move') {
+    if (mode === 'advanced' && modifier && action === 'move') {
       const next = selected ? selectedClipIds.filter((id) => id !== clip.id) : [...selectedClipIds, clip.id];
       const nextActive = selected
         ? (activeClipId === clip.id ? next[next.length - 1] ?? null : (activeClipId && next.includes(activeClipId) ? activeClipId : activeClipIdFromSelection(project, next, clip.id)))
@@ -260,8 +280,8 @@ function TimelineClip({
       return;
     }
 
-    const dragIds = mode === 'move' && selected ? [...selectedClipIds] : [clip.id];
-    if (!selected || mode !== 'move') onSelectionChange(mode === 'move' ? dragIds : [clip.id], clip.id, laneId);
+    const dragIds = action === 'move' && selected ? [...selectedClipIds] : [clip.id];
+    if (!selected || action !== 'move') onSelectionChange(action === 'move' ? dragIds : [clip.id], clip.id, laneId);
 
     const startX = event.clientX;
     const snapshot = cloneAudioProject(project);
@@ -275,7 +295,7 @@ function TimelineClip({
 
     const move = (moveEvent: PointerEvent) => {
       const rawDeltaMs = (moveEvent.clientX - startX) / pixelsPerSecond * 1000;
-      if (mode === 'move') {
+      if (action === 'move') {
         const snap = snapSelectionDelta(snapshot, dragIds, rawDeltaMs, { pixelsPerSecond, playheadMs });
         if (Math.abs(snap.deltaMs) < 0.001) return;
         finalProject = moveClips(snapshot, dragIds, snap.deltaMs, true);
@@ -285,25 +305,25 @@ function TimelineClip({
         return;
       }
 
-      if (mode === 'fade-in' || mode === 'fade-out') {
+      if (action === 'fade-in' || action === 'fade-out') {
         const maxFade = getClipTimelineDurationMs(initial);
-        const value = mode === 'fade-in' ? initial.fadeInMs + rawDeltaMs : initial.fadeOutMs - rawDeltaMs;
+        const value = action === 'fade-in' ? initial.fadeInMs + rawDeltaMs : initial.fadeOutMs - rawDeltaMs;
         const nextValue = clamp(Math.round(value / 10) * 10, 0, maxFade);
-        if (Math.abs(nextValue - (mode === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)) < 0.001) return;
-        finalProject = patchClipInProject(snapshot, laneId, clip.id, mode === 'fade-in' ? { fadeInMs: nextValue } : { fadeOutMs: nextValue });
+        if (Math.abs(nextValue - (action === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)) < 0.001) return;
+        finalProject = patchClipInProject(snapshot, laneId, clip.id, action === 'fade-in' ? { fadeInMs: nextValue } : { fadeOutMs: nextValue });
         changed = true;
         onSnapGuideChange(null);
         onProjectChange(finalProject, { recordHistory: false });
         return;
       }
 
-      const movingEdge = mode === 'left'
+      const movingEdge = action === 'left'
         ? initial.timelineStartMs + rawDeltaMs
         : getClipTimelineEndMs(initial) + rawDeltaMs;
       const snap = snapTimelinePosition(snapshot, movingEdge, { pixelsPerSecond, playheadMs, excludedClipIds: new Set([clip.id]) });
-      const deltaMs = mode === 'left' ? snap.valueMs - initial.timelineStartMs : snap.valueMs - getClipTimelineEndMs(initial);
+      const deltaMs = action === 'left' ? snap.valueMs - initial.timelineStartMs : snap.valueMs - getClipTimelineEndMs(initial);
 
-      finalProject = mode === 'left'
+      finalProject = action === 'left'
         ? trimClipStart(snapshot, clip.id, initial.timelineStartMs + deltaMs)
         : trimClipEnd(snapshot, clip.id, getClipTimelineEndMs(initial) + deltaMs, sourceDurationMs);
       if (finalProject === snapshot) return;
@@ -333,14 +353,18 @@ function TimelineClip({
       data-clip-id={clip.id}
     >
       <WaveformCanvas asset={asset} sourceStartMs={clip.sourceStartMs} sourceEndMs={clip.sourceEndMs} />
-      <div className="audio-editor-fade-area audio-editor-fade-area--in" style={{ width: fadeInLeft }} aria-hidden="true" />
-      <div className="audio-editor-fade-area audio-editor-fade-area--out" style={{ width: fadeOutRight }} aria-hidden="true" />
+      {mode === 'advanced' && <>
+        <div className="audio-editor-fade-area audio-editor-fade-area--in" style={{ width: fadeInLeft }} aria-hidden="true" />
+        <div className="audio-editor-fade-area audio-editor-fade-area--out" style={{ width: fadeOutRight }} aria-hidden="true" />
+      </>}
       <strong>{label}</strong>
       <small>{formatMs(clip.sourceStartMs)}–{formatMs(clip.sourceEndMs)}</small>
-      <button className="audio-editor-trim-handle audio-editor-trim-handle--left" aria-label="Обрезать начало" onPointerDown={(event) => gesture(event, 'left')} />
-      <button className="audio-editor-trim-handle audio-editor-trim-handle--right" aria-label="Обрезать конец" onPointerDown={(event) => gesture(event, 'right')} />
-      <button className="audio-editor-fade-handle audio-editor-fade-handle--in" aria-label="Fade in" style={{ left: fadeInLeft }} onPointerDown={(event) => gesture(event, 'fade-in')} />
-      <button className="audio-editor-fade-handle audio-editor-fade-handle--out" aria-label="Fade out" style={{ right: fadeOutRight }} onPointerDown={(event) => gesture(event, 'fade-out')} />
+      <button title="Тяните, чтобы обрезать начало фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--left" aria-label="Обрезать начало" onPointerDown={(event) => gesture(event, 'left')} />
+      <button title="Тяните, чтобы обрезать конец фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--right" aria-label="Обрезать конец" onPointerDown={(event) => gesture(event, 'right')} />
+      {mode === 'advanced' && <>
+        <button title="Fade in — плавное появление звука" className="audio-editor-fade-handle audio-editor-fade-handle--in" aria-label="Fade in" style={{ left: fadeInLeft }} onPointerDown={(event) => gesture(event, 'fade-in')} />
+        <button title="Fade out — плавное затухание звука" className="audio-editor-fade-handle audio-editor-fade-handle--out" aria-label="Fade out" style={{ right: fadeOutRight }} onPointerDown={(event) => gesture(event, 'fade-out')} />
+      </>}
     </div>
   );
 }
