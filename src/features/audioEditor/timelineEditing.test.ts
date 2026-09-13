@@ -38,25 +38,23 @@ function lane(id: string, clips: AudioClip[] = []) {
 }
 
 describe('audio editor timeline editing', () => {
-  it('ripple-inserts inside a clip by splitting it and moving the right side', () => {
+  it('inserts a clip at the cursor without moving existing material', () => {
     const source = project([lane('lane-1', [clip('a', 0, 10_000)])]);
     const inserted = clip('b', 0, 2_000, 'track-2');
-    const result = insertClip(source, 'lane-1', inserted, 5_000, true);
+    const result = insertClip(source, 'lane-1', inserted, 5_000);
     const clips = result.lanes[0]!.clips.sort((a, b) => a.timelineStartMs - b.timelineStartMs);
 
-    expect(clips).toHaveLength(3);
+    expect(clips).toHaveLength(2);
+    expect(clips[0]!.id).toBe('a');
     expect(clips[0]!.timelineStartMs).toBe(0);
-    expect(getClipTimelineEndMs(clips[0]!)).toBe(5_000);
     expect(clips[1]!.id).toBe('b');
     expect(clips[1]!.timelineStartMs).toBe(5_000);
-    expect(clips[2]!.timelineStartMs).toBe(7_000);
-    expect(clips[2]!.sourceStartMs).toBe(5_000);
   });
 
-  it('ripple-deletes selected spans and closes the following gap', () => {
+  it('deletes selected clips without closing the gap', () => {
     const source = project([lane('lane-1', [clip('a', 0, 1_000), clip('b', 1_000, 2_000), clip('c', 3_000, 1_000)])]);
-    const result = deleteClips(source, ['b'], true);
-    expect(result.lanes[0]!.clips.map((item) => [item.id, item.timelineStartMs])).toEqual([['a', 0], ['c', 1_000]]);
+    const result = deleteClips(source, ['b']);
+    expect(result.lanes[0]!.clips.map((item) => [item.id, item.timelineStartMs])).toEqual([['a', 0], ['c', 3_000]]);
   });
 
   it('snaps to playhead, markers and clip edges before falling back to the 50 ms grid', () => {
@@ -100,7 +98,7 @@ describe('audio editor timeline editing', () => {
     ]);
     const clipboard = copyClips(source, ['a', 'b']);
     expect(clipboard).not.toBeNull();
-    const pasted = pasteClips(source, clipboard!, 5_000, 'lane-1', false);
+    const pasted = pasteClips(source, clipboard!, 5_000, 'lane-1');
     const first = pasted.project.lanes[0]!.clips.find((item) => pasted.clipIds.includes(item.id))!;
     const second = pasted.project.lanes[1]!.clips.find((item) => pasted.clipIds.includes(item.id))!;
 

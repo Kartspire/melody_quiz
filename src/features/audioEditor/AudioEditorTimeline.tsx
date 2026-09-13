@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import type { AudioAsset, AudioClip, AudioProject, MediaTrack } from '../../model/types';
 import { getClipTimelineDurationMs, getClipTimelineEndMs, getProjectDurationMs, normalizeAudioClip } from './audioProject';
 import { WaveformCanvas } from './WaveformCanvas';
 import { getProjectMarkers, moveClips, snapSelectionDelta, snapTimelinePosition, trimClipEnd, trimClipStart } from './timelineEditing';
 import { cloneAudioProject } from './useAudioEditorHistory';
-import type { AudioEditorMode } from './audioEditorUi';
 
 const MIN_ZOOM = 16;
 const MAX_ZOOM = 180;
@@ -15,7 +14,6 @@ type ProjectChangeOptions = {
 };
 
 export function AudioEditorTimeline({
-  mode,
   project,
   trackById,
   assetById,
@@ -29,13 +27,12 @@ export function AudioEditorTimeline({
   onSelectionChange,
   onSelectLane,
   onProjectChange,
-  onToggleLane,
+  onToggleMute,
   onRenameLane,
   onRemoveLane,
   onZoomChange,
   onRemoveMarker,
 }: {
-  mode: AudioEditorMode;
   project: AudioProject;
   trackById: Map<string, MediaTrack>;
   assetById: Map<string, AudioAsset>;
@@ -49,7 +46,7 @@ export function AudioEditorTimeline({
   onSelectionChange: (clipIds: string[], activeClipId: string | null, laneId?: string) => void;
   onSelectLane: (laneId: string) => void;
   onProjectChange: (project: AudioProject, options?: ProjectChangeOptions) => void;
-  onToggleLane: (laneId: string, key: 'muted' | 'solo') => void;
+  onToggleMute: (laneId: string) => void;
   onRenameLane: (laneId: string, name: string) => void;
   onRemoveLane: (laneId: string) => void;
   onZoomChange: (value: number) => void;
@@ -72,23 +69,30 @@ export function AudioEditorTimeline({
     }
   }, [isPlaying, pixelsPerSecond, playheadMs]);
 
-  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (!event.ctrlKey && !event.metaKey) return;
-    event.preventDefault();
+  useEffect(() => {
     const scroll = scrollRef.current;
     if (!scroll) return;
-    const rect = scroll.getBoundingClientRect();
-    const localX = event.clientX - rect.left;
-    const timeAtPointerMs = (scroll.scrollLeft + localX) / pixelsPerSecond * 1000;
-    const factor = event.deltaY < 0 ? 1.12 : 0.88;
-    const nextZoom = clamp(Math.round(pixelsPerSecond * factor), MIN_ZOOM, MAX_ZOOM);
-    if (nextZoom === pixelsPerSecond) return;
-    onZoomChange(nextZoom);
-    requestAnimationFrame(() => {
-      const current = scrollRef.current;
-      if (current) current.scrollLeft = Math.max(0, timeAtPointerMs / 1000 * nextZoom - localX);
-    });
-  };
+
+    const handleWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = scroll.getBoundingClientRect();
+      const localX = event.clientX - rect.left;
+      const timeAtPointerMs = (scroll.scrollLeft + localX) / pixelsPerSecond * 1000;
+      const factor = event.deltaY < 0 ? 1.12 : 0.88;
+      const nextZoom = clamp(Math.round(pixelsPerSecond * factor), MIN_ZOOM, MAX_ZOOM);
+      if (nextZoom === pixelsPerSecond) return;
+      onZoomChange(nextZoom);
+      requestAnimationFrame(() => {
+        const current = scrollRef.current;
+        if (current) current.scrollLeft = Math.max(0, timeAtPointerMs / 1000 * nextZoom - localX);
+      });
+    };
+
+    scroll.addEventListener('wheel', handleWheel, { passive: false });
+    return () => scroll.removeEventListener('wheel', handleWheel);
+  }, [onZoomChange, pixelsPerSecond]);
 
   return (
     <div className="audio-editor-timeline-shell">
@@ -96,23 +100,16 @@ export function AudioEditorTimeline({
         <div className="audio-editor-ruler-spacer" />
         {project.lanes.map((lane) => (
           <div key={lane.id} className="audio-editor-lane-control" onClick={() => onSelectLane(lane.id)}>
-            {mode === 'advanced' ? (
-              <>
-                <input aria-label="Название дорожки" value={lane.name} maxLength={120} onChange={(event) => onRenameLane(lane.id, event.target.value)} />
-                <div>
-                  <button title="Mute — заглушить эту дорожку" aria-label={`Заглушить дорожку ${lane.name}`} className={lane.muted ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'muted'); }}>M</button>
-                  <button title="Solo — слушать только Solo-дорожки" aria-label={`Solo для дорожки ${lane.name}`} className={lane.solo ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleLane(lane.id, 'solo'); }}>S</button>
-                  <button title={lane.clips.length > 0 ? 'Сначала удалите или перенесите фрагменты с дорожки' : 'Удалить пустую дорожку'} aria-label={`Удалить дорожку ${lane.name}`} className="audio-editor-mini" disabled={project.lanes.length <= 1 || lane.clips.length > 0} onClick={(event) => { event.stopPropagation(); onRemoveLane(lane.id); }}>×</button>
-                </div>
-              </>
-            ) : (
-              <div className="audio-editor-lane-control__simple"><strong>{lane.name}</strong><small className={lane.muted || lane.solo ? 'audio-editor-lane-status--warning' : undefined}>{lane.solo ? 'Solo включён · см. расширенный режим' : lane.muted ? 'Mute включён · см. расширенный режим' : lane.clips.length ? `${lane.clips.length} фрагм.` : 'Пусто'}</small></div>
-            )}
+            <input aria-label="Название дорожки" value={lane.name} maxLength={120} onChange={(event) => onRenameLane(lane.id, event.target.value)} />
+            <div>
+              <button title="Mute — заглушить эту дорожку" aria-label={`Заглушить дорожку ${lane.name}`} className={lane.muted ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleMute(lane.id); }}>M</button>
+              <button title={lane.clips.length > 0 ? 'Сначала удалите или перенесите фрагменты с дорожки' : 'Удалить пустую дорожку'} aria-label={`Удалить дорожку ${lane.name}`} className="audio-editor-mini" disabled={project.lanes.length <= 1 || lane.clips.length > 0} onClick={(event) => { event.stopPropagation(); onRemoveLane(lane.id); }}>×</button>
+            </div>
           </div>
         ))}
       </div>
 
-      <div ref={scrollRef} className="audio-editor-scroll" onWheel={handleWheel}>
+      <div ref={scrollRef} className="audio-editor-scroll">
         <div
           className="audio-editor-timeline"
           style={{ width }}
@@ -124,7 +121,6 @@ export function AudioEditorTimeline({
           }}
         >
           <TimelineRuler
-            mode={mode}
             project={project}
             width={width}
             pixelsPerSecond={pixelsPerSecond}
@@ -134,7 +130,7 @@ export function AudioEditorTimeline({
           {project.lanes.every((lane) => lane.clips.length === 0) && (
             <div className="audio-editor-timeline-empty">
               <strong>Таймлайн пока пуст</strong>
-              <span>Выберите трек в блоке выше и нажмите «Добавить в монтаж».</span>
+              <span>Выберите трек в блоке выше и нажмите «Добавить».</span>
             </div>
           )}
           {project.lanes.map((lane) => (
@@ -156,7 +152,6 @@ export function AudioEditorTimeline({
                 return (
                   <TimelineClip
                     key={clip.id}
-                    mode={mode}
                     clip={clip}
                     project={project}
                     laneId={lane.id}
@@ -177,7 +172,7 @@ export function AudioEditorTimeline({
             </div>
           ))}
 
-          {mode === 'advanced' && getProjectMarkers(project).map((marker) => (
+          {getProjectMarkers(project).map((marker) => (
             <div
               key={marker.id}
               className="audio-editor-marker-line"
@@ -194,8 +189,7 @@ export function AudioEditorTimeline({
   );
 }
 
-function TimelineRuler({ mode, project, width, pixelsPerSecond, onSeek, onRemoveMarker }: {
-  mode: AudioEditorMode;
+function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker }: {
   project: AudioProject;
   width: number;
   pixelsPerSecond: number;
@@ -213,7 +207,7 @@ function TimelineRuler({ mode, project, width, pixelsPerSecond, onSeek, onRemove
       onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000);
     }}>
       {ticks.map((second) => <span key={second} style={{ left: second * pixelsPerSecond }}>{formatMs(second * 1000)}</span>)}
-      {mode === 'advanced' && getProjectMarkers(project).map((marker) => (
+      {getProjectMarkers(project).map((marker) => (
         <button
           key={marker.id}
           className="audio-editor-marker"
@@ -230,7 +224,6 @@ function TimelineRuler({ mode, project, width, pixelsPerSecond, onSeek, onRemove
 }
 
 function TimelineClip({
-  mode,
   clip,
   project,
   laneId,
@@ -246,7 +239,6 @@ function TimelineClip({
   onProjectChange,
   onSnapGuideChange,
 }: {
-  mode: AudioEditorMode;
   clip: AudioClip;
   project: AudioProject;
   laneId: string;
@@ -271,7 +263,7 @@ function TimelineClip({
   const gesture = (event: ReactPointerEvent, action: 'move' | 'left' | 'right' | 'fade-in' | 'fade-out') => {
     event.stopPropagation();
     const modifier = event.ctrlKey || event.metaKey || event.shiftKey;
-    if (mode === 'advanced' && modifier && action === 'move') {
+    if (modifier && action === 'move') {
       const next = selected ? selectedClipIds.filter((id) => id !== clip.id) : [...selectedClipIds, clip.id];
       const nextActive = selected
         ? (activeClipId === clip.id ? next[next.length - 1] ?? null : (activeClipId && next.includes(activeClipId) ? activeClipId : activeClipIdFromSelection(project, next, clip.id)))
@@ -358,18 +350,14 @@ function TimelineClip({
       data-clip-id={clip.id}
     >
       <WaveformCanvas asset={asset} sourceStartMs={clip.sourceStartMs} sourceEndMs={clip.sourceEndMs} />
-      {mode === 'advanced' && <>
-        <div className="audio-editor-fade-area audio-editor-fade-area--in" style={{ width: fadeInLeft }} aria-hidden="true" />
-        <div className="audio-editor-fade-area audio-editor-fade-area--out" style={{ width: fadeOutRight }} aria-hidden="true" />
-      </>}
+      <div className="audio-editor-fade-area audio-editor-fade-area--in" style={{ width: fadeInLeft }} aria-hidden="true" />
+      <div className="audio-editor-fade-area audio-editor-fade-area--out" style={{ width: fadeOutRight }} aria-hidden="true" />
       <strong>{label}</strong>
       <small>{formatMs(clip.sourceStartMs)}–{formatMs(clip.sourceEndMs)}</small>
       <button title="Тяните, чтобы обрезать начало фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--left" aria-label="Обрезать начало" onPointerDown={(event) => gesture(event, 'left')} />
       <button title="Тяните, чтобы обрезать конец фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--right" aria-label="Обрезать конец" onPointerDown={(event) => gesture(event, 'right')} />
-      {mode === 'advanced' && <>
-        <button title="Fade in — плавное появление звука" className="audio-editor-fade-handle audio-editor-fade-handle--in" aria-label="Fade in" style={{ left: fadeInLeft }} onPointerDown={(event) => gesture(event, 'fade-in')} />
-        <button title="Fade out — плавное затухание звука" className="audio-editor-fade-handle audio-editor-fade-handle--out" aria-label="Fade out" style={{ right: fadeOutRight }} onPointerDown={(event) => gesture(event, 'fade-out')} />
-      </>}
+      <button title="Fade in — плавное появление звука" className="audio-editor-fade-handle audio-editor-fade-handle--in" aria-label="Fade in" style={{ left: fadeInLeft }} onPointerDown={(event) => gesture(event, 'fade-in')} />
+      <button title="Fade out — плавное затухание звука" className="audio-editor-fade-handle audio-editor-fade-handle--out" aria-label="Fade out" style={{ right: fadeOutRight }} onPointerDown={(event) => gesture(event, 'fade-out')} />
     </div>
   );
 }

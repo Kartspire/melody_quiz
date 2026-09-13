@@ -38,9 +38,7 @@ import { useAudioEditorPlayback } from './useAudioEditorPlayback';
 import { AudioEditorTransport } from './AudioEditorTransport';
 import { AudioEditorTimeline } from './AudioEditorTimeline';
 import { AudioEditorClipInspector } from './AudioEditorClipInspector';
-import { AudioEditorGuide, AudioEditorHelpTip } from './AudioEditorGuide';
-import { AudioEditorQuickStart } from './AudioEditorQuickStart';
-import { hasSeenAudioEditorGuide, markAudioEditorGuideSeen, readAudioEditorMode, writeAudioEditorMode, type AudioEditorMode } from './audioEditorUi';
+import { AudioEditorHelpTip } from './AudioEditorGuide';
 import { getAudioEditorKeyboardCommand } from './audioEditorKeyboard';
 
 const DEFAULT_PIXELS_PER_SECOND = 36;
@@ -59,9 +57,6 @@ export function AudioEditorPage() {
   const [selectedLaneId, setSelectedLaneId] = useState<string | null>(null);
   const [sourceTrackId, setSourceTrackId] = useState(mediaTracks[0]?.id ?? '');
   const [zoom, setZoom] = useState(DEFAULT_PIXELS_PER_SECOND);
-  const [ripple, setRipple] = useState(true);
-  const [editorMode, setEditorMode] = useState<AudioEditorMode>(() => readAudioEditorMode());
-  const [showGuide, setShowGuide] = useState(() => !hasSeenAudioEditorGuide());
   const [clipboard, setClipboard] = useState<AudioClipboard | null>(null);
   const [busy, setBusy] = useState<'source' | 'render' | 'library' | null>(null);
   const [rendered, setRendered] = useState<{ blob: Blob; projectUpdatedAt: number } | null>(null);
@@ -77,10 +72,7 @@ export function AudioEditorPage() {
     notify({ kind: 'error', title: 'Не удалось воспроизвести монтаж', message: getErrorMessage(error, 'Проверьте исходные треки.') });
   }, [notify]);
   const playback = useAudioEditorPlayback({ project, mediaTracks, audioAssets, onError: handlePlaybackError });
-  const historyStatus = history.status(project?.id);
   const canCrossfade = selectedClipIds.length >= 2;
-  const effectiveRipple = editorMode === 'simple' ? true : ripple;
-  const clipCount = project?.lanes.reduce((total, lane) => total + lane.clips.length, 0) ?? 0;
 
   useEffect(() => {
     if (!projects.length) {
@@ -181,7 +173,7 @@ export function AudioEditorPage() {
       const targetLaneId = selectedLaneId && project.lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : project.lanes[0].id;
       const position = snapTimelinePosition(project, playback.playheadMs, { pixelsPerSecond: zoom }).valueMs;
       const clip = createAudioClip(track.id, duration, position);
-      replaceProject(insertClip(project, targetLaneId, clip, position, effectiveRipple));
+      replaceProject(insertClip(project, targetLaneId, clip, position));
       setSelectedLaneId(targetLaneId);
       setSelectedClipIds([clip.id]);
       setActiveClipId(clip.id);
@@ -228,7 +220,7 @@ export function AudioEditorPage() {
 
   const deleteSelection = () => {
     if (!project || selectedClipIds.length === 0) return;
-    replaceProject(deleteClips(project, selectedClipIds, effectiveRipple));
+    replaceProject(deleteClips(project, selectedClipIds));
     setSelectedClipIds([]);
     setActiveClipId(null);
   };
@@ -242,7 +234,7 @@ export function AudioEditorPage() {
   const pasteClipboard = () => {
     if (!project || !clipboard) return;
     const laneId = selectedLaneId && project.lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : project.lanes[0].id;
-    const result = pasteClips(project, clipboard, playback.playheadMs, laneId, effectiveRipple);
+    const result = pasteClips(project, clipboard, playback.playheadMs, laneId);
     if (result.clipIds.length === 0) return;
     replaceProject(result.project);
     setSelectedClipIds(result.clipIds);
@@ -258,7 +250,7 @@ export function AudioEditorPage() {
     const selectedEnds = selectedClipIds.map((id) => findClip(project, id)).filter(Boolean).map((location) => getClipTimelineEndMs(location!.clip));
     const position = (selectedEnds.length ? Math.max(...selectedEnds) : playback.playheadMs) + 100;
     const laneId = activeClip?.lane.id ?? selectedLaneId ?? project.lanes[0].id;
-    const result = pasteClips(project, copied, position, laneId, false);
+    const result = pasteClips(project, copied, position, laneId);
     replaceProject(result.project);
     setSelectedClipIds(result.clipIds);
     setActiveClipId(result.clipIds[result.clipIds.length - 1] ?? null);
@@ -342,7 +334,6 @@ export function AudioEditorPage() {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isEditableTarget(event.target)) return;
       const command = getAudioEditorKeyboardCommand(event, {
-        advanced: editorMode === 'advanced',
         hasSelection: selectedClipIds.length > 0,
         hasClipboard: Boolean(clipboard),
         hasActiveClip: Boolean(activeClip),
@@ -364,16 +355,6 @@ export function AudioEditorPage() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
 
-  const changeEditorMode = (mode: AudioEditorMode) => {
-    setEditorMode(mode);
-    writeAudioEditorMode(mode);
-    if (mode === 'simple') setRipple(true);
-  };
-
-  const closeGuide = () => {
-    markAudioEditorGuideSeen();
-    setShowGuide(false);
-  };
 
   return (
     <main className="audio-editor-page page-shell">
@@ -384,7 +365,6 @@ export function AudioEditorPage() {
           <p>Нарезайте треки, переставляйте фрагменты и собирайте миксы. Исходные файлы в медиатеке не изменяются.</p>
         </div>
         <div className="page-heading__actions">
-          <button className="secondary-button audio-editor-help-button" onClick={() => setShowGuide(true)}>? Как пользоваться</button>
           <button className="primary-button" onClick={createProject}>+ Новый монтаж</button>
           <button className="secondary-button" disabled={!project} onClick={() => void deleteProject()}>Удалить монтаж</button>
         </div>
@@ -420,79 +400,52 @@ export function AudioEditorPage() {
           </aside>
 
           <section className="audio-editor-workspace">
-            <div className="audio-editor-mode-bar">
-              <div>
-                <strong>Режим редактора</strong>
-                <span>{editorMode === 'simple' ? 'Только основные действия для быстрой нарезки.' : 'Все дорожки, fades, crossfade, маркеры и групповые операции.'}</span>
-              </div>
-              <div className="audio-editor-mode-switch" role="group" aria-label="Режим аудиоредактора">
-                <button className={editorMode === 'simple' ? 'audio-editor-mode-switch__active' : ''} onClick={() => changeEditorMode('simple')}>Простой</button>
-                <button className={editorMode === 'advanced' ? 'audio-editor-mode-switch__active' : ''} onClick={() => changeEditorMode('advanced')}>Расширенный</button>
-                <AudioEditorHelpTip text="Простой режим скрывает профессиональные настройки, но не удаляет их. Можно переключаться в любой момент." />
-              </div>
-            </div>
+
 
             <div className="audio-editor-header">
               <label>
                 <span>Название монтажа</span>
                 <input value={project.name} maxLength={200} onChange={(event) => replaceProject({ ...project, name: event.target.value || 'Без названия' })} />
               </label>
-              <div className="audio-editor-history-actions">
-                <button className="secondary-button" title="Ctrl/Cmd+Z" disabled={!historyStatus.canUndo} onClick={undo}>↶ Отменить</button>
-                <button className="secondary-button" title="Ctrl/Cmd+Shift+Z или Ctrl/Cmd+Y" disabled={!historyStatus.canRedo} onClick={redo}>↷ Вернуть</button>
-              </div>
             </div>
 
             <div className="audio-editor-sourcebar">
               <label>
-                <span>{editorMode === 'simple' ? '1. Выберите трек' : 'Добавить из медиатеки'}</span>
+                <span>Добавить из медиатеки</span>
                 <select value={sourceTrackId} onChange={(event) => setSourceTrackId(event.target.value)}>
                   {mediaTracks.length === 0 && <option value="">В медиатеке нет аудио</option>}
                   {mediaTracks.map((track) => <option key={track.id} value={track.id}>{track.name}</option>)}
                 </select>
               </label>
-              {editorMode === 'advanced' && (
-                <label>
-                  <span>На дорожку <AudioEditorHelpTip text="Выберите дорожку, на которую будет добавлен новый фрагмент." /></span>
-                  <select value={selectedLaneId ?? ''} onChange={(event) => setSelectedLaneId(event.target.value)}>
-                    {project.lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
-                  </select>
-                </label>
-              )}
+              <label>
+                <span>На дорожку <AudioEditorHelpTip text="Выберите дорожку, на которую будет добавлен новый фрагмент." /></span>
+                <select value={selectedLaneId ?? ''} onChange={(event) => setSelectedLaneId(event.target.value)}>
+                  {project.lanes.map((lane) => <option key={lane.id} value={lane.id}>{lane.name}</option>)}
+                </select>
+              </label>
               <button
                 className="primary-button"
-                title={editorMode === 'simple' ? 'Добавить выбранный трек в позицию вертикального курсора' : effectiveRipple ? 'Вставить трек и раздвинуть материал справа' : 'Вставить трек без сдвига остальных фрагментов'}
+                title="Добавить выбранный трек в позицию вертикального курсора"
                 disabled={!sourceTrackId || busy === 'source'}
                 onClick={() => void addSourceClip()}
-              >{busy === 'source' ? 'Читаем аудио…' : editorMode === 'simple' ? '+ Добавить в монтаж' : effectiveRipple ? '+ Вставить и раздвинуть' : '+ Вставить в курсор'}</button>
-              {editorMode === 'advanced' && <button className="secondary-button" title="Добавить дополнительную дорожку для наложений" disabled={project.lanes.length >= 32} onClick={addLane}>+ Дорожка</button>}
+              >{busy === 'source' ? 'Читаем аудио…' : 'Добавить'}</button>
+              <button className="secondary-button" title="Добавить дополнительную дорожку для наложений" disabled={project.lanes.length >= 32} onClick={addLane}>+ Дорожка</button>
               {mediaTracks.length === 0 && <span className="audio-editor-sourcebar__empty">Сначала добавьте аудиофайл в общую медиатеку.</span>}
             </div>
 
-            {editorMode === 'simple' && <AudioEditorQuickStart clipCount={clipCount} selectedCount={selectedClipIds.length} hasRendered={Boolean(rendered && rendered.projectUpdatedAt === project.updatedAt)} />}
-
             <AudioEditorTransport
-              mode={editorMode}
               playheadMs={playback.playheadMs}
               durationMs={playback.durationMs}
               isPlaying={playback.isPlaying}
-              zoom={zoom}
-              ripple={effectiveRipple}
               selectedCount={selectedClipIds.length}
-              canPaste={Boolean(clipboard)}
               canCrossfade={canCrossfade}
               onTogglePlayback={() => void playback.toggle()}
               onSeek={seek}
-              onZoomChange={setZoom}
-              onRippleChange={setRipple}
               onAddMarker={addMarker}
-              onCopy={copySelection}
-              onPaste={pasteClipboard}
               onCrossfade={applyCrossfade}
             />
 
             <AudioEditorTimeline
-              mode={editorMode}
               project={project}
               trackById={trackById}
               assetById={assetById}
@@ -510,7 +463,7 @@ export function AudioEditorPage() {
               }}
               onSelectLane={setSelectedLaneId}
               onProjectChange={(next, options) => replaceProject(next, options)}
-              onToggleLane={(laneId, key) => replaceProject({ ...project, lanes: project.lanes.map((lane) => lane.id === laneId ? { ...lane, [key]: !lane[key] } : lane) })}
+              onToggleMute={(laneId) => replaceProject({ ...project, lanes: project.lanes.map((lane) => lane.id === laneId ? { ...lane, muted: !lane.muted, solo: false } : lane) })}
               onRenameLane={(laneId, name) => replaceProject({ ...project, lanes: project.lanes.map((lane) => lane.id === laneId ? { ...lane, name: name || 'Дорожка' } : lane) })}
               onRemoveLane={removeLane}
               onZoomChange={setZoom}
@@ -519,8 +472,7 @@ export function AudioEditorPage() {
 
             {activeClip && (
               <AudioEditorClipInspector
-                mode={editorMode}
-                project={project}
+                  project={project}
                 clip={activeClip.clip}
                 laneId={activeClip.lane.id}
                 sourceName={trackById.get(activeClip.clip.sourceTrackId)?.name ?? 'Исходник удалён'}
@@ -538,7 +490,7 @@ export function AudioEditorPage() {
             <section className="audio-editor-render-card">
               <div>
                 <strong>Готовый микс</strong>
-                <span>{editorMode === 'simple' ? 'Когда всё звучит как нужно, соберите один WAV и добавьте его в медиатеку.' : 'Результат рендерится локально в браузере в WAV и может быть добавлен в общую медиатеку.'}</span>
+                <span>Результат рендерится локально в браузере в WAV и может быть добавлен в общую медиатеку.</span>
               </div>
               <div className="audio-editor-render-actions">
                 <button className="primary-button" disabled={playback.durationMs <= 0 || busy === 'render'} onClick={() => void prepareRender()}>{busy === 'render' ? 'Собираем WAV…' : 'Подготовить WAV'}</button>
@@ -553,7 +505,6 @@ export function AudioEditorPage() {
           </section>
         </div>
       )}
-      {showGuide && <AudioEditorGuide onClose={closeGuide} />}
     </main>
   );
 }

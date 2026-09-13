@@ -6,7 +6,6 @@ import {
   getClipTimelineDurationMs,
   getClipTimelineEndMs,
   normalizeAudioClip,
-  splitAudioClip,
 } from './audioProject';
 
 export const AUDIO_EDITOR_GRID_MS = 50;
@@ -29,7 +28,6 @@ export type AudioClipboardClip = {
 
 export type AudioClipboard = {
   clips: AudioClipboardClip[];
-  durationMs: number;
 };
 
 type SnapOptions = {
@@ -168,36 +166,17 @@ export function insertClip(
   laneId: string,
   inputClip: AudioClip,
   positionMs: number,
-  ripple: boolean,
 ): AudioProject {
   const position = clampTimelineMs(positionMs);
   const clip = normalizeAudioClip({ ...inputClip, timelineStartMs: position });
-  const duration = getClipTimelineDurationMs(clip);
-  const next = mapLanes(project, (lane) => {
-    if (lane.id !== laneId) return lane;
-    if (!ripple) return { ...lane, clips: [...lane.clips, clip] };
-    const withGap = createRippleGap(lane, position, duration);
-    return { ...withGap, clips: [...withGap.clips, clip] };
-  });
-  return ripple ? next : applyAutoCrossfades(next, new Set([laneId]));
+  const next = mapLanes(project, (lane) => lane.id === laneId ? { ...lane, clips: [...lane.clips, clip] } : lane);
+  return applyAutoCrossfades(next, new Set([laneId]));
 }
 
-export function deleteClips(project: AudioProject, clipIds: readonly string[], ripple: boolean): AudioProject {
+export function deleteClips(project: AudioProject, clipIds: readonly string[]): AudioProject {
   const ids = new Set(clipIds);
   if (ids.size === 0) return project;
-  return mapLanes(project, (lane) => {
-    const selected = lane.clips.filter((clip) => ids.has(clip.id));
-    if (selected.length === 0) return lane;
-    const remaining = lane.clips.filter((clip) => !ids.has(clip.id));
-    if (!ripple) return { ...lane, clips: remaining };
-
-    const ranges = mergeRanges(selected.map((clip) => ({ start: clip.timelineStartMs, end: getClipTimelineEndMs(clip) })));
-    const clips = remaining.map((clip) => {
-      const shift = ranges.reduce((sum, range) => clip.timelineStartMs >= range.end ? sum + (range.end - range.start) : sum, 0);
-      return shift > 0 ? normalizeAudioClip({ ...clip, timelineStartMs: Math.max(0, clip.timelineStartMs - shift) }) : clip;
-    });
-    return { ...lane, clips };
-  });
+  return mapLanes(project, (lane) => ({ ...lane, clips: lane.clips.filter((clip) => !ids.has(clip.id)) }));
 }
 
 export function copyClips(project: AudioProject, clipIds: readonly string[]): AudioClipboard | null {
@@ -207,13 +186,11 @@ export function copyClips(project: AudioProject, clipIds: readonly string[]): Au
   if (selected.length === 0) return null;
   const minStart = Math.min(...selected.map(({ clip }) => clip.timelineStartMs));
   const minLane = Math.min(...selected.map(({ lane }) => laneIndexById.get(lane.id) ?? 0));
-  const maxEnd = Math.max(...selected.map(({ clip }) => getClipTimelineEndMs(clip)));
   return {
     clips: selected.map(({ lane, clip }) => ({
       clip: { ...clip, timelineStartMs: clip.timelineStartMs - minStart },
       laneOffset: (laneIndexById.get(lane.id) ?? 0) - minLane,
     })),
-    durationMs: Math.max(AUDIO_EDITOR_MIN_CLIP_MS, maxEnd - minStart),
   };
 }
 
@@ -222,7 +199,6 @@ export function pasteClips(
   clipboard: AudioClipboard,
   positionMs: number,
   anchorLaneId: string,
-  ripple: boolean,
 ): { project: AudioProject; clipIds: string[] } {
   if (clipboard.clips.length === 0) return { project, clipIds: [] };
   const anchorIndex = Math.max(0, project.lanes.findIndex((lane) => lane.id === anchorLaneId));
@@ -235,12 +211,6 @@ export function pasteClips(
   const safePosition = clampTimelineMs(positionMs);
   const ids: string[] = [];
 
-  if (ripple) {
-    const touchedLaneIndexes = new Set(clipboard.clips.map((item) => anchorIndex + Math.min(item.laneOffset, availableMaxOffset)));
-    lanes = lanes.map((lane, laneIndex) => touchedLaneIndexes.has(laneIndex)
-      ? createRippleGap(lane, safePosition, clipboard.durationMs)
-      : lane);
-  }
 
   for (const item of clipboard.clips) {
     const laneIndex = anchorIndex + Math.min(item.laneOffset, availableMaxOffset);
@@ -255,8 +225,7 @@ export function pasteClips(
     lanes[laneIndex] = { ...lane, clips: [...lane.clips, clip] };
   }
 
-  let next: AudioProject = { ...project, lanes };
-  if (!ripple) next = applyAutoCrossfades(next, new Set(ids.flatMap((id) => {
+  const next = applyAutoCrossfades({ ...project, lanes }, new Set(ids.flatMap((id) => {
     const location = findClip(projectWithLanes(project, lanes), id);
     return location ? [location.lane.id] : [];
   })));
@@ -388,36 +357,6 @@ function getClipLocations(project: AudioProject, ids: ReadonlySet<string>) {
 
 function mapLanes(project: AudioProject, mapper: (lane: AudioEditorLane) => AudioEditorLane): AudioProject {
   return { ...project, lanes: project.lanes.map(mapper) };
-}
-
-function createRippleGap(lane: AudioEditorLane, positionMs: number, durationMs: number): AudioEditorLane {
-  const clips: AudioClip[] = [];
-  for (const existing of lane.clips) {
-    const start = existing.timelineStartMs;
-    const end = getClipTimelineEndMs(existing);
-    if (start < positionMs && end > positionMs) {
-      const split = splitAudioClip(existing, positionMs);
-      if (split) {
-        clips.push(split[0], normalizeAudioClip({ ...split[1], timelineStartMs: split[1].timelineStartMs + durationMs }));
-        continue;
-      }
-    }
-    clips.push(start >= positionMs
-      ? normalizeAudioClip({ ...existing, timelineStartMs: existing.timelineStartMs + durationMs })
-      : existing);
-  }
-  return { ...lane, clips };
-}
-
-function mergeRanges(ranges: { start: number; end: number }[]) {
-  const sorted = ranges.filter((range) => range.end > range.start).sort((a, b) => a.start - b.start);
-  const result: { start: number; end: number }[] = [];
-  for (const range of sorted) {
-    const last = result[result.length - 1];
-    if (!last || range.start > last.end) result.push({ ...range });
-    else last.end = Math.max(last.end, range.end);
-  }
-  return result;
 }
 
 function createLaneForPaste(index: number): AudioEditorLane {

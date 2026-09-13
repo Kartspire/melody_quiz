@@ -98,9 +98,9 @@ async function decodeRequiredBuffers(
 }
 
 function getAudibleLanes(project: AudioProject) {
-  const hasSolo = project.lanes.some((lane) => lane.solo);
-  return project.lanes.filter((lane) => hasSolo ? lane.solo : !lane.muted);
+  return project.lanes.filter((lane) => !lane.muted);
 }
+
 
 function scheduleClip(
   context: BaseAudioContext,
