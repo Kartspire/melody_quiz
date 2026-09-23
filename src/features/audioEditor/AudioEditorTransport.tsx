@@ -2,22 +2,20 @@ export function AudioEditorTransport({
   playheadMs,
   durationMs,
   isPlaying,
+  isStarting,
   selectedCount,
-  canCrossfade,
   onTogglePlayback,
   onSeek,
   onAddMarker,
-  onCrossfade,
 }: {
   playheadMs: number;
   durationMs: number;
   isPlaying: boolean;
+  isStarting: boolean;
   selectedCount: number;
-  canCrossfade: boolean;
   onTogglePlayback: () => void;
   onSeek: (positionMs: number) => void;
   onAddMarker: () => void;
-  onCrossfade: () => void;
 }) {
   return (
     <>
@@ -25,10 +23,10 @@ export function AudioEditorTransport({
         <button
           className="audio-editor-play"
           title="Воспроизвести или поставить на паузу (Space)"
-          aria-label={isPlaying ? 'Пауза' : 'Воспроизвести'}
+          aria-label={isStarting ? 'Отменить запуск' : isPlaying ? 'Пауза' : 'Воспроизвести'}
           disabled={durationMs <= 0}
           onClick={onTogglePlayback}
-        >{isPlaying ? 'Ⅱ' : '▶'}</button>
+        >{isStarting ? '…' : isPlaying ? 'Ⅱ' : '▶'}</button>
         <strong title="Текущая позиция курсора">{formatMs(playheadMs)}</strong>
         <input
           aria-label="Позиция воспроизведения"
@@ -45,7 +43,6 @@ export function AudioEditorTransport({
 
       <div className="audio-editor-editbar">
         <button className="secondary-button" title="Поставить метку в позиции курсора" onClick={onAddMarker}>+ Маркер</button>
-        <button className="secondary-button" title="Применить Fade In и Fade Out по 1 секунде ко всем выбранным фрагментам. Положение и дорожка не важны." disabled={!canCrossfade} onClick={onCrossfade}>Crossfade 1 с</button>
         <span className="audio-editor-selection-summary">{selectedCount > 0 ? `Выбрано: ${selectedCount}` : 'Фрагменты не выбраны'}</span>
       </div>
 

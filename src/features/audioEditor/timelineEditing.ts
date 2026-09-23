@@ -11,7 +11,6 @@ import {
 export const AUDIO_EDITOR_GRID_MS = 50;
 export const AUDIO_EDITOR_SNAP_THRESHOLD_PX = 8;
 export const AUDIO_EDITOR_MAX_MARKERS = 500;
-export const AUDIO_EDITOR_DEFAULT_CROSSFADE_MS = 1_000;
 
 export type TimelineSnapKind = 'playhead' | 'clip-start' | 'clip-end' | 'marker' | 'grid';
 
@@ -114,21 +113,20 @@ export function snapSelectionDelta(
   };
 }
 
-export function moveClips(project: AudioProject, clipIds: readonly string[], deltaMs: number, autoCrossfade = true): AudioProject {
+export function moveClips(project: AudioProject, clipIds: readonly string[], deltaMs: number): AudioProject {
   const ids = new Set(clipIds);
   const selected = getClipLocations(project, ids);
   if (selected.length === 0 || Math.abs(deltaMs) < 0.001) return project;
   const minStart = Math.min(...selected.map(({ clip }) => clip.timelineStartMs));
   const maxEnd = Math.max(...selected.map(({ clip }) => getClipTimelineEndMs(clip)));
   const safeDelta = clamp(deltaMs, -minStart, AUDIO_EDITOR_MAX_PROJECT_MS - maxEnd);
-  const affectedLaneIds = new Set(selected.map(({ lane }) => lane.id));
   const next = mapLanes(project, (lane) => ({
     ...lane,
     clips: lane.clips.map((clip) => ids.has(clip.id)
       ? normalizeAudioClip({ ...clip, timelineStartMs: clip.timelineStartMs + safeDelta })
       : clip),
   }));
-  return autoCrossfade ? applyAutoCrossfades(next, affectedLaneIds) : next;
+  return next;
 }
 
 export function trimClipStart(project: AudioProject, clipId: string, requestedTimelineStartMs: number): AudioProject {
@@ -144,7 +142,7 @@ export function trimClipStart(project: AudioProject, clipId: string, requestedTi
     timelineStartMs: clip.timelineStartMs + safeDelta,
     sourceStartMs: clip.sourceStartMs + safeDelta * clip.playbackRate,
   });
-  return applyAutoCrossfades(next, new Set([lane.id]));
+  return next;
 }
 
 export function trimClipEnd(project: AudioProject, clipId: string, requestedTimelineEndMs: number, sourceDurationMs?: number): AudioProject {
@@ -158,7 +156,7 @@ export function trimClipEnd(project: AudioProject, clipId: string, requestedTime
   const safeDelta = clamp(deltaMs, minDelta, maxDelta);
   if (Math.abs(safeDelta) < 0.001) return project;
   const next = patchClip(project, lane.id, clip.id, { sourceEndMs: clip.sourceEndMs + safeDelta * clip.playbackRate });
-  return applyAutoCrossfades(next, new Set([lane.id]));
+  return next;
 }
 
 export function insertClip(
@@ -170,7 +168,7 @@ export function insertClip(
   const position = clampTimelineMs(positionMs);
   const clip = normalizeAudioClip({ ...inputClip, timelineStartMs: position });
   const next = mapLanes(project, (lane) => lane.id === laneId ? { ...lane, clips: [...lane.clips, clip] } : lane);
-  return applyAutoCrossfades(next, new Set([laneId]));
+  return next;
 }
 
 export function deleteClips(project: AudioProject, clipIds: readonly string[]): AudioProject {
@@ -225,11 +223,7 @@ export function pasteClips(
     lanes[laneIndex] = { ...lane, clips: [...lane.clips, clip] };
   }
 
-  const next = applyAutoCrossfades({ ...project, lanes }, new Set(ids.flatMap((id) => {
-    const location = findClip(projectWithLanes(project, lanes), id);
-    return location ? [location.lane.id] : [];
-  })));
-  return { project: next, clipIds: ids };
+  return { project: { ...project, lanes }, clipIds: ids };
 }
 
 export function moveClipsToLane(project: AudioProject, clipIds: readonly string[], targetLaneId: string): AudioProject {
@@ -243,52 +237,7 @@ export function moveClipsToLane(project: AudioProject, clipIds: readonly string[
       ? [...lane.clips.filter((clip) => !ids.has(clip.id)), ...clips]
       : lane.clips.filter((clip) => !ids.has(clip.id)),
   }));
-  return applyAutoCrossfades({ ...project, lanes }, new Set([targetLaneId]));
-}
-
-export function applyAutoCrossfades(project: AudioProject, laneIds?: ReadonlySet<string>): AudioProject {
-  return mapLanes(project, (lane) => {
-    if (laneIds && !laneIds.has(lane.id)) return lane;
-    if (lane.clips.length < 2) return lane;
-    const sorted = [...lane.clips].sort((a, b) => a.timelineStartMs - b.timelineStartMs || a.id.localeCompare(b.id));
-    const patches = new Map<string, Partial<AudioClip>>();
-    for (let index = 0; index < sorted.length - 1; index += 1) {
-      const left = sorted[index]!;
-      const right = sorted[index + 1]!;
-      const overlap = getClipTimelineEndMs(left) - right.timelineStartMs;
-      if (overlap <= 0) continue;
-      const safeOverlap = Math.min(overlap, getClipTimelineDurationMs(left), getClipTimelineDurationMs(right));
-      patches.set(left.id, { ...(patches.get(left.id) ?? {}), fadeOutMs: safeOverlap });
-      patches.set(right.id, { ...(patches.get(right.id) ?? {}), fadeInMs: safeOverlap });
-    }
-    if (patches.size === 0) return lane;
-    return {
-      ...lane,
-      clips: lane.clips.map((clip) => patches.has(clip.id) ? normalizeAudioClip({ ...clip, ...patches.get(clip.id)! }) : clip),
-    };
-  });
-}
-
-export function applyCrossfadeToSelection(
-  project: AudioProject,
-  clipIds: readonly string[],
-  durationMs = AUDIO_EDITOR_DEFAULT_CROSSFADE_MS,
-): AudioProject | null {
-  if (clipIds.length < 2) return null;
-  const ids = new Set(clipIds);
-  let selectedCount = 0;
-  const normalizedDuration = Math.max(0, Number.isFinite(durationMs) ? durationMs : AUDIO_EDITOR_DEFAULT_CROSSFADE_MS);
-  const lanes = project.lanes.map((lane) => ({
-    ...lane,
-    clips: lane.clips.map((clip) => {
-      if (!ids.has(clip.id)) return clip;
-      selectedCount += 1;
-      const clipDuration = getClipTimelineDurationMs(clip);
-      const fadeMs = Math.min(normalizedDuration, clipDuration / 2);
-      return normalizeAudioClip({ ...clip, fadeInMs: fadeMs, fadeOutMs: fadeMs });
-    }),
-  }));
-  return selectedCount >= 2 ? { ...project, lanes } : null;
+  return { ...project, lanes };
 }
 
 export function addProjectMarker(project: AudioProject, positionMs: number, label?: string): { project: AudioProject; marker: AudioProjectMarker } | null {
@@ -361,10 +310,6 @@ function mapLanes(project: AudioProject, mapper: (lane: AudioEditorLane) => Audi
 
 function createLaneForPaste(index: number): AudioEditorLane {
   return { id: createId('audio-lane'), name: `Дорожка ${index + 1}`, muted: false, solo: false, clips: [] };
-}
-
-function projectWithLanes(project: AudioProject, lanes: AudioEditorLane[]): AudioProject {
-  return { ...project, lanes };
 }
 
 function clampTimelineMs(value: number) {

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useUnit } from 'effector-react';
 import { $audioAssets, $audioProjects, $mediaTracks } from '../../model/game';
 import type { AudioClip, AudioProject } from '../../model/types';
 import { addMediaTrackFileFx } from '../../model/media';
+import { captureStateWrite } from '../../model/core/writeAccess';
 import { downloadBlob } from '../../lib/download';
 import { getErrorMessage } from '../../lib/errors';
 import { useFeedback } from '../../components/feedback/FeedbackProvider';
@@ -20,8 +21,6 @@ import {
 import { audioProjectAdded, audioProjectDeleted, audioProjectReplaced } from './model';
 import {
   addProjectMarker,
-  applyAutoCrossfades,
-  applyCrossfadeToSelection,
   copyClips,
   deleteClips,
   findClip,
@@ -72,7 +71,10 @@ export function AudioEditorPage() {
     notify({ kind: 'error', title: 'Не удалось воспроизвести монтаж', message: getErrorMessage(error, 'Проверьте исходные треки.') });
   }, [notify]);
   const playback = useAudioEditorPlayback({ project, mediaTracks, audioAssets, onError: handlePlaybackError });
-  const canCrossfade = selectedClipIds.length >= 2;
+  const activeProjectRef = useRef(project?.id);
+  activeProjectRef.current = project?.id;
+  const sourceRequestRef = useRef(0);
+  useEffect(() => () => { sourceRequestRef.current += 1; }, [project?.id]);
 
   useEffect(() => {
     if (!projects.length) {
@@ -166,14 +168,20 @@ export function AudioEditorPage() {
     const asset = track ? assetById.get(track.audioId) : undefined;
     if (!track || !asset) return;
     try {
+      const assertCurrentWrite = captureStateWrite();
+      const request = ++sourceRequestRef.current;
       setBusy('source');
       const buffer = await decodeAudioAsset(asset);
+      if (request !== sourceRequestRef.current || activeProjectRef.current !== project.id) return;
+      assertCurrentWrite();
+      const current = $audioProjects.getState().find((item) => item.id === project.id);
+      if (!current || !$mediaTracks.getState().some((item) => item.id === track.id && item.audioId === asset.id)) return;
       const duration = buffer.duration * 1000;
       setSourceDurations((current) => ({ ...current, [track.id]: duration }));
-      const targetLaneId = selectedLaneId && project.lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : project.lanes[0].id;
-      const position = snapTimelinePosition(project, playback.playheadMs, { pixelsPerSecond: zoom }).valueMs;
+      const targetLaneId = selectedLaneId && current.lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : current.lanes[0].id;
+      const position = snapTimelinePosition(current, playback.playheadMs, { pixelsPerSecond: zoom }).valueMs;
       const clip = createAudioClip(track.id, duration, position);
-      replaceProject(insertClip(project, targetLaneId, clip, position));
+      replaceProject(insertClip(current, targetLaneId, clip, position), { historySnapshot: current });
       setSelectedLaneId(targetLaneId);
       setSelectedClipIds([clip.id]);
       setActiveClipId(clip.id);
@@ -208,7 +216,7 @@ export function AudioEditorPage() {
       ...lane,
       clips: lane.clips.map((clip) => clip.id === activeClip.clip.id ? normalizeAudioClip({ ...clip, ...patch }) : clip),
     } : lane);
-    replaceProject(applyAutoCrossfades({ ...project, lanes }, new Set([activeClip.lane.id])));
+    replaceProject({ ...project, lanes });
   };
 
   const moveSelectionToLane = (targetLaneId: string) => {
@@ -272,16 +280,6 @@ export function AudioEditorPage() {
     setActiveClipId(split[1].id);
   };
 
-  const applyCrossfade = () => {
-    if (!project) return;
-    const next = applyCrossfadeToSelection(project, selectedClipIds);
-    if (!next) {
-      notify({ kind: 'info', message: 'Выберите минимум два фрагмента для Crossfade.' });
-      return;
-    }
-    replaceProject(next);
-  };
-
   const addMarker = () => {
     if (!project) return;
     const result = addProjectMarker(project, playback.playheadMs);
@@ -332,7 +330,8 @@ export function AudioEditorPage() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) return;
+      if (event.defaultPrevented || event.repeat || isEditableTarget(event.target)) return;
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
       const command = getAudioEditorKeyboardCommand(event, {
         hasSelection: selectedClipIds.length > 0,
         hasClipboard: Boolean(clipboard),
@@ -437,12 +436,11 @@ export function AudioEditorPage() {
               playheadMs={playback.playheadMs}
               durationMs={playback.durationMs}
               isPlaying={playback.isPlaying}
+              isStarting={playback.isStarting}
               selectedCount={selectedClipIds.length}
-              canCrossfade={canCrossfade}
               onTogglePlayback={() => void playback.toggle()}
               onSeek={seek}
               onAddMarker={addMarker}
-              onCrossfade={applyCrossfade}
             />
 
             <AudioEditorTimeline
@@ -511,7 +509,7 @@ export function AudioEditorPage() {
 
 function isEditableTarget(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(target.tagName);
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
 }
 
 function formatMs(ms: number) {

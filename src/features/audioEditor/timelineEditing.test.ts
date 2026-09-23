@@ -3,7 +3,7 @@ import type { AudioClip, AudioProject } from '../../model/types';
 import { getClipTimelineEndMs } from './audioProject';
 import {
   addProjectMarker,
-  applyCrossfadeToSelection,
+  moveClipsToLane,
   copyClips,
   deleteClips,
   insertClip,
@@ -70,7 +70,7 @@ describe('audio editor timeline editing', () => {
   it('moves multiple selected clips as one group and snaps an edge to another clip', () => {
     const source = project([lane('lane-1', [clip('a', 0, 1_000), clip('b', 1_500, 1_000), clip('anchor', 5_000, 1_000)])]);
     const snap = snapSelectionDelta(source, ['a', 'b'], 2_430, { pixelsPerSecond: 40 });
-    const result = moveClips(source, ['a', 'b'], snap.deltaMs, false);
+    const result = moveClips(source, ['a', 'b'], snap.deltaMs);
     const moved = result.lanes[0]!.clips.filter((item) => item.id === 'a' || item.id === 'b');
 
     expect(snap.guideMs).toBe(5_000);
@@ -106,19 +106,27 @@ describe('audio editor timeline editing', () => {
     expect(second.timelineStartMs).toBe(5_500);
   });
 
-  it('applies a default one-second crossfade to every selected clip regardless of lane or overlap', () => {
-    const source = project([
-      lane('lane-1', [clip('a', 0, 4_000)]),
-      lane('lane-2', [clip('b', 12_000, 4_000), clip('c', 20_000, 1_000)]),
-    ]);
-    const result = applyCrossfadeToSelection(source, ['a', 'b', 'c']);
-    expect(result).not.toBeNull();
-    expect(result!.lanes[0]!.clips.find((item) => item.id === 'a')!.fadeInMs).toBe(1_000);
-    expect(result!.lanes[0]!.clips.find((item) => item.id === 'a')!.fadeOutMs).toBe(1_000);
-    expect(result!.lanes[1]!.clips.find((item) => item.id === 'b')!.fadeInMs).toBe(1_000);
-    expect(result!.lanes[1]!.clips.find((item) => item.id === 'b')!.fadeOutMs).toBe(1_000);
-    expect(result!.lanes[1]!.clips.find((item) => item.id === 'c')!.fadeInMs).toBe(500);
-    expect(result!.lanes[1]!.clips.find((item) => item.id === 'c')!.fadeOutMs).toBe(500);
+  it('preserves manual fades when clips overlap after timeline operations', () => {
+    const a = { ...clip('a', 0, 8_000), fadeInMs: 250, fadeOutMs: 500 };
+    const b = { ...clip('b', 6_000, 8_000), fadeInMs: 750, fadeOutMs: 300 };
+    const source = project([lane('lane-1', [a, b]), lane('lane-2')]);
+    const results = [
+      insertClip(source, 'lane-1', clip('c', 0, 4_000), 5_000),
+      moveClips(source, ['b'], -1_000),
+      trimClipStart(source, 'b', 6_500),
+      trimClipEnd(source, 'a', 7_000, 8_000),
+      moveClipsToLane(source, ['b'], 'lane-1'),
+      pasteClips(source, copyClips(source, ['b'])!, 4_000, 'lane-1').project,
+    ];
+    for (const result of results) {
+      for (const original of [a, b]) {
+        const actual = result.lanes.flatMap(l => l.clips).find(c => c.id === original.id)!;
+        expect([actual.fadeInMs, actual.fadeOutMs]).toEqual([original.fadeInMs, original.fadeOutMs]);
+      }
+    }
+    const clips = results[5].lanes[0].clips;
+    const pasted = clips[clips.length - 1];
+    expect([pasted.fadeInMs, pasted.fadeOutMs]).toEqual([750, 300]);
   });
 
   it('adds persistent markers to the project', () => {

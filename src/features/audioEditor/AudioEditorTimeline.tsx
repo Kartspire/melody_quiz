@@ -254,14 +254,22 @@ function TimelineClip({
   onProjectChange: (project: AudioProject, options?: ProjectChangeOptions) => void;
   onSnapGuideChange: (positionMs: number | null) => void;
 }) {
+  const [draggingFade, setDraggingFade] = useState<'fade-in' | 'fade-out' | null>(null);
   const left = clip.timelineStartMs / 1000 * pixelsPerSecond;
   const timelineDuration = getClipTimelineDurationMs(clip);
   const width = Math.max(8, timelineDuration / 1000 * pixelsPerSecond);
   const fadeInLeft = Math.min(width - 4, Math.max(0, clip.fadeInMs / 1000 * pixelsPerSecond));
   const fadeOutRight = Math.min(width - 4, Math.max(0, clip.fadeOutMs / 1000 * pixelsPerSecond));
 
+  const fadeInHandleLeft = clamp(fadeInLeft - 9, 0, Math.max(0, width - 18));
+  const fadeOutHandleRight = clamp(fadeOutRight - 9, 0, Math.max(0, width - 18));
+  const staggerFadeOut = width - fadeOutHandleRight - 18 < fadeInHandleLeft + 18
+    && width - fadeOutHandleRight > fadeInHandleLeft;
+
   const gesture = (event: ReactPointerEvent, action: 'move' | 'left' | 'right' | 'fade-in' | 'fade-out') => {
+    if (event.button !== 0) return;
     event.stopPropagation();
+    if (action === 'fade-in' || action === 'fade-out') setDraggingFade(action);
     const modifier = event.ctrlKey || event.metaKey || event.shiftKey;
     if (modifier && action === 'move') {
       const next = selected ? selectedClipIds.filter((id) => id !== clip.id) : [...selectedClipIds, clip.id];
@@ -291,7 +299,7 @@ function TimelineClip({
       if (action === 'move') {
         const snap = snapSelectionDelta(snapshot, dragIds, rawDeltaMs, { pixelsPerSecond, playheadMs });
         if (Math.abs(snap.deltaMs) < 0.001) return;
-        finalProject = moveClips(snapshot, dragIds, snap.deltaMs, true);
+        finalProject = moveClips(snapshot, dragIds, snap.deltaMs);
         changed = true;
         onSnapGuideChange(snap.guideMs);
         onProjectChange(finalProject, { recordHistory: false });
@@ -302,7 +310,7 @@ function TimelineClip({
         const maxFade = getClipTimelineDurationMs(initial);
         const value = action === 'fade-in' ? initial.fadeInMs + rawDeltaMs : initial.fadeOutMs - rawDeltaMs;
         const nextValue = clamp(Math.round(value / 10) * 10, 0, maxFade);
-        if (Math.abs(nextValue - (action === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)) < 0.001) return;
+        if (!changed && Math.abs(nextValue - (action === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)) < 0.001) return;
         finalProject = patchClipInProject(snapshot, laneId, clip.id, action === 'fade-in' ? { fadeInMs: nextValue } : { fadeOutMs: nextValue });
         changed = true;
         onSnapGuideChange(null);
@@ -326,6 +334,7 @@ function TimelineClip({
     };
 
     const up = () => {
+      setDraggingFade(null);
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
       target.removeEventListener('pointercancel', up);
@@ -356,8 +365,28 @@ function TimelineClip({
       <small>{formatMs(clip.sourceStartMs)}–{formatMs(clip.sourceEndMs)}</small>
       <button title="Тяните, чтобы обрезать начало фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--left" aria-label="Обрезать начало" onPointerDown={(event) => gesture(event, 'left')} />
       <button title="Тяните, чтобы обрезать конец фрагмента" className="audio-editor-trim-handle audio-editor-trim-handle--right" aria-label="Обрезать конец" onPointerDown={(event) => gesture(event, 'right')} />
-      <button title="Fade in — плавное появление звука" className="audio-editor-fade-handle audio-editor-fade-handle--in" aria-label="Fade in" style={{ left: fadeInLeft }} onPointerDown={(event) => gesture(event, 'fade-in')} />
-      <button title="Fade out — плавное затухание звука" className="audio-editor-fade-handle audio-editor-fade-handle--out" aria-label="Fade out" style={{ right: fadeOutRight }} onPointerDown={(event) => gesture(event, 'fade-out')} />
+      <button
+        className="audio-editor-fade-handle audio-editor-fade-handle--in"
+        aria-label="Fade in"
+        title="Тяните вправо для плавного появления звука"
+        style={{ left: fadeInHandleLeft }}
+        data-dragging={draggingFade === 'fade-in' || undefined}
+        onPointerDown={(event) => gesture(event, 'fade-in')}
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 15 15 3M8 3h7v7" /></svg>
+        <span className="audio-editor-fade-value" aria-hidden="true">Fade In · {formatFadeDuration(clip.fadeInMs)}</span>
+      </button>
+      <button
+        className={`audio-editor-fade-handle audio-editor-fade-handle--out${staggerFadeOut ? ' audio-editor-fade-handle--staggered' : ''}`}
+        aria-label="Fade out"
+        title="Тяните влево для плавного затухания звука"
+        style={{ right: fadeOutHandleRight }}
+        data-dragging={draggingFade === 'fade-out' || undefined}
+        onPointerDown={(event) => gesture(event, 'fade-out')}
+      >
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="m3 3 12 12M8 15h7V8" /></svg>
+        <span className="audio-editor-fade-value" aria-hidden="true">Fade Out · {formatFadeDuration(clip.fadeOutMs)}</span>
+      </button>
     </div>
   );
 }
@@ -397,4 +426,8 @@ function formatMs(ms: number) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function formatFadeDuration(ms: number) {
+  return `${(ms / 1000).toFixed(2).replace(".", ",")} с`;
 }
