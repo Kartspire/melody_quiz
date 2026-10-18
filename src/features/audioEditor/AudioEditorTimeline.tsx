@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import type { AudioAsset, AudioClip, AudioProject, MediaTrack } from '../../model/types';
+import type { AudioAsset, AudioClip, AudioProject, AudioTimeRange, MediaTrack } from '../../model/types';
 import { getClipTimelineDurationMs, getClipTimelineEndMs, getProjectDurationMs, normalizeAudioClip } from './audioProject';
 import { WaveformCanvas } from './WaveformCanvas';
-import { getProjectMarkers, moveClips, snapSelectionDelta, snapTimelinePosition, trimClipEnd, trimClipStart } from './timelineEditing';
+import { getProjectMarkers, moveClips, shiftClipLanes, snapSelectionDelta, snapTimelinePosition, trimClipEnd, trimClipStart } from './timelineEditing';
 import { cloneAudioProject } from './useAudioEditorHistory';
+
+import { startPointerDrag, cancelPointerDrag } from './pointerDrag';
+import { TimelineRange, startRangeDrag } from './TimelineRange';
+import { TextField } from './editorFields';
 
 const MIN_ZOOM = 16;
 const MAX_ZOOM = 180;
@@ -31,8 +35,11 @@ export function AudioEditorTimeline({
   onRenameLane,
   onRemoveLane,
   onZoomChange,
-  onRemoveMarker,
+  onRemoveMarker, range = null, onRangeChange, onDropFiles,
 }: {
+  range?: AudioTimeRange | null;
+  onRangeChange?: (range: AudioTimeRange | null) => void;
+  onDropFiles?: (files: File[], laneId: string, positionMs: number) => void;
   project: AudioProject;
   trackById: Map<string, MediaTrack>;
   assetById: Map<string, AudioAsset>;
@@ -42,7 +49,7 @@ export function AudioEditorTimeline({
   isPlaying: boolean;
   selectedClipIds: readonly string[];
   activeClipId: string | null;
-  onSeek: (positionMs: number) => void;
+  onSeek: (positionMs: number, precise?: boolean) => void;
   onSelectionChange: (clipIds: string[], activeClipId: string | null, laneId?: string) => void;
   onSelectLane: (laneId: string) => void;
   onProjectChange: (project: AudioProject, options?: ProjectChangeOptions) => void;
@@ -53,6 +60,8 @@ export function AudioEditorTimeline({
   onRemoveMarker: (markerId: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { const shell = shellRef.current; return () => { if (shell) cancelPointerDrag(shell); }; }, []);
   const [snapGuideMs, setSnapGuideMs] = useState<number | null>(null);
   const selectedSet = useMemo(() => new Set(selectedClipIds), [selectedClipIds]);
   const width = Math.max(1200, Math.ceil((getProjectDurationMs(project) + 30_000) / 1000 * pixelsPerSecond));
@@ -95,12 +104,12 @@ export function AudioEditorTimeline({
   }, [onZoomChange, pixelsPerSecond]);
 
   return (
-    <div className="audio-editor-timeline-shell">
+    <div ref={shellRef} className="audio-editor-timeline-shell">
       <div className="audio-editor-lane-controls">
         <div className="audio-editor-ruler-spacer" />
         {project.lanes.map((lane) => (
           <div key={lane.id} className="audio-editor-lane-control" onClick={() => onSelectLane(lane.id)}>
-            <input aria-label="Название дорожки" value={lane.name} maxLength={120} onChange={(event) => onRenameLane(lane.id, event.target.value)} />
+            <TextField label="Название дорожки" value={lane.name} maxLength={120} onCommit={value => onRenameLane(lane.id, value)} />
             <div>
               <button title="Mute — заглушить эту дорожку" aria-label={`Заглушить дорожку ${lane.name}`} className={lane.muted ? 'audio-editor-mini audio-editor-mini--active' : 'audio-editor-mini'} onClick={(event) => { event.stopPropagation(); onToggleMute(lane.id); }}>M</button>
               <button title={lane.clips.length > 0 ? 'Сначала удалите или перенесите фрагменты с дорожки' : 'Удалить пустую дорожку'} aria-label={`Удалить дорожку ${lane.name}`} className="audio-editor-mini" disabled={project.lanes.length <= 1 || lane.clips.length > 0} onClick={(event) => { event.stopPropagation(); onRemoveLane(lane.id); }}>×</button>
@@ -117,7 +126,7 @@ export function AudioEditorTimeline({
             if (event.target !== event.currentTarget) return;
             const rect = event.currentTarget.getBoundingClientRect();
             onSelectionChange([], null);
-            onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000);
+            onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000, event.altKey);
           }}
         >
           <TimelineRuler
@@ -126,7 +135,9 @@ export function AudioEditorTimeline({
             pixelsPerSecond={pixelsPerSecond}
             onSeek={onSeek}
             onRemoveMarker={onRemoveMarker}
+            range={range} onRangeChange={onRangeChange}
           />
+          {range && onRangeChange && <TimelineRange project={project} zoom={pixelsPerSecond} range={range} onChange={onRangeChange} onSeek={onSeek} />}
           {project.lanes.every((lane) => lane.clips.length === 0) && (
             <div className="audio-editor-timeline-empty">
               <strong>Таймлайн пока пуст</strong>
@@ -137,13 +148,16 @@ export function AudioEditorTimeline({
             <div
               key={lane.id}
               className="audio-editor-lane"
+              data-lane-id={lane.id}
+              onDragOver={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }}
+              onDrop={event => { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); onDropFiles?.(Array.from(event.dataTransfer.files), lane.id, Math.max(0, (event.clientX - rect.left) / pixelsPerSecond * 1000)); }}
               style={{ width, backgroundSize: `${pixelsPerSecond}px 100%` }}
               onPointerDown={(event) => {
                 if (event.target !== event.currentTarget) return;
                 const rect = event.currentTarget.getBoundingClientRect();
                 onSelectLane(lane.id);
                 onSelectionChange([], null, lane.id);
-                onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000);
+                onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000, event.altKey);
               }}
             >
               {lane.clips.map((clip) => {
@@ -189,11 +203,13 @@ export function AudioEditorTimeline({
   );
 }
 
-function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker }: {
+function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker, range, onRangeChange }: {
+  range: AudioTimeRange | null;
+  onRangeChange?: (range: AudioTimeRange | null) => void;
   project: AudioProject;
   width: number;
   pixelsPerSecond: number;
-  onSeek: (positionMs: number) => void;
+  onSeek: (positionMs: number, precise?: boolean) => void;
   onRemoveMarker: (markerId: string) => void;
 }) {
   const durationSeconds = Math.ceil(width / pixelsPerSecond);
@@ -203,8 +219,8 @@ function TimelineRuler({ project, width, pixelsPerSecond, onSeek, onRemoveMarker
   return (
     <div className="audio-editor-ruler" onPointerDown={(event) => {
       if (event.target !== event.currentTarget && !(event.target instanceof HTMLSpanElement)) return;
-      const rect = event.currentTarget.getBoundingClientRect();
-      onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000);
+      if (onRangeChange) startRangeDrag(event, project, pixelsPerSecond, range, 'new', onRangeChange, onSeek);
+      else { const rect = event.currentTarget.getBoundingClientRect(); onSeek((event.clientX - rect.left) / pixelsPerSecond * 1000, event.altKey); }
     }}>
       {ticks.map((second) => <span key={second} style={{ left: second * pixelsPerSecond }}>{formatMs(second * 1000)}</span>)}
       {getProjectMarkers(project).map((marker) => (
@@ -285,21 +301,23 @@ function TimelineClip({
     if (!selected || action !== 'move') onSelectionChange(action === 'move' ? dragIds : [clip.id], clip.id, laneId);
 
     const startX = event.clientX;
+    const startY = event.clientY;
+    const laneHeight = event.currentTarget.closest('.audio-editor-lane')?.getBoundingClientRect().height || 100;
     const snapshot = cloneAudioProject(project);
     const initialLocation = findClip(snapshot, clip.id);
     if (!initialLocation) return;
     const initial = initialLocation.clip;
     let changed = false;
     let finalProject = snapshot;
-    const target = event.currentTarget as HTMLElement;
-    target.setPointerCapture?.(event.pointerId);
+    const target = event.currentTarget.closest<HTMLElement>('.audio-editor-timeline-shell')!;
 
     const move = (moveEvent: PointerEvent) => {
       const rawDeltaMs = (moveEvent.clientX - startX) / pixelsPerSecond * 1000;
       if (action === 'move') {
-        const snap = snapSelectionDelta(snapshot, dragIds, rawDeltaMs, { pixelsPerSecond, playheadMs });
-        if (Math.abs(snap.deltaMs) < 0.001) return;
-        finalProject = moveClips(snapshot, dragIds, snap.deltaMs);
+        const snap = snapSelectionDelta(snapshot, dragIds, rawDeltaMs, { pixelsPerSecond, playheadMs, disabled: moveEvent.altKey });
+        const laneDelta = Math.round((moveEvent.clientY - startY) / laneHeight);
+        if (!changed && Math.abs(snap.deltaMs) < 0.001 && !laneDelta) return;
+        finalProject = shiftClipLanes(moveClips(snapshot, dragIds, snap.deltaMs), dragIds, laneDelta);
         changed = true;
         onSnapGuideChange(snap.guideMs);
         onProjectChange(finalProject, { recordHistory: false });
@@ -309,9 +327,11 @@ function TimelineClip({
       if (action === 'fade-in' || action === 'fade-out') {
         const maxFade = getClipTimelineDurationMs(initial);
         const value = action === 'fade-in' ? initial.fadeInMs + rawDeltaMs : initial.fadeOutMs - rawDeltaMs;
-        const nextValue = clamp(Math.round(value / 10) * 10, 0, maxFade);
+        const nextValue = clamp((moveEvent.altKey ? value : Math.round(value / 10) * 10), 0, maxFade);
         if (!changed && Math.abs(nextValue - (action === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)) < 0.001) return;
-        finalProject = patchClipInProject(snapshot, laneId, clip.id, action === 'fade-in' ? { fadeInMs: nextValue } : { fadeOutMs: nextValue });
+        finalProject = nextValue === (action === 'fade-in' ? initial.fadeInMs : initial.fadeOutMs)
+          ? snapshot
+          : patchClipInProject(snapshot, laneId, clip.id, action === 'fade-in' ? { fadeInMs: nextValue } : { fadeOutMs: nextValue });
         changed = true;
         onSnapGuideChange(null);
         onProjectChange(finalProject, { recordHistory: false });
@@ -321,33 +341,30 @@ function TimelineClip({
       const movingEdge = action === 'left'
         ? initial.timelineStartMs + rawDeltaMs
         : getClipTimelineEndMs(initial) + rawDeltaMs;
-      const snap = snapTimelinePosition(snapshot, movingEdge, { pixelsPerSecond, playheadMs, excludedClipIds: new Set([clip.id]) });
+      const snap = snapTimelinePosition(snapshot, movingEdge, { pixelsPerSecond, playheadMs, excludedClipIds: new Set([clip.id]), disabled: moveEvent.altKey });
       const deltaMs = action === 'left' ? snap.valueMs - initial.timelineStartMs : snap.valueMs - getClipTimelineEndMs(initial);
 
       finalProject = action === 'left'
         ? trimClipStart(snapshot, clip.id, initial.timelineStartMs + deltaMs)
         : trimClipEnd(snapshot, clip.id, getClipTimelineEndMs(initial) + deltaMs, sourceDurationMs);
-      if (finalProject === snapshot) return;
+      if (!changed && finalProject === snapshot) return;
       changed = true;
       onSnapGuideChange(snap.guideMs);
       onProjectChange(finalProject, { recordHistory: false });
     };
 
-    const up = () => {
+    const up = (cancelled: boolean) => {
       setDraggingFade(null);
-      target.removeEventListener('pointermove', move);
-      target.removeEventListener('pointerup', up);
-      target.removeEventListener('pointercancel', up);
       onSnapGuideChange(null);
-      if (changed) {
+      if (cancelled) { if (changed) onProjectChange(snapshot, { recordHistory: false }); return; }
+      if (changed && finalProject !== snapshot) {
         onProjectChange(finalProject, { recordHistory: true, historySnapshot: snapshot });
+        if (action === 'move') onSelectionChange(dragIds, clip.id, findClip(finalProject, clip.id)?.lane.id);
       } else if (collapseSelectionOnClick) {
         onSelectionChange([clip.id], clip.id, laneId);
       }
     };
-    target.addEventListener('pointermove', move);
-    target.addEventListener('pointerup', up);
-    target.addEventListener('pointercancel', up);
+    startPointerDrag(target, event.pointerId, move, up);
   };
 
   return (

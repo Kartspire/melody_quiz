@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Проверка WAV аудиоредактора</title>
+    <style>
+      body { font: 16px system-ui; max-width: 860px; margin: 32px auto; padding: 0 20px; }
+      button { font: inherit; padding: 10px 16px; }
+      pre { white-space: pre-wrap; line-height: 1.5; }
+    </style>
+  </head>
+  <body>
+    <h1>Проверка WAV аудиоредактора</h1>
+    <p>Проверяет амплитуду WAV после рендера в настоящем Web Audio. Использует синтетический сигнал в памяти; медиатека и проекты не изменяются.</p>
+    <button id="run">Запустить проверки</button>
+    <pre id="result" role="status">Ожидание запуска.</pre>
+    <script type="module" src="./audio-editor.ts"></script>
+  </body>
+</html>

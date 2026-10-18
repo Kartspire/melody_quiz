@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { GainSlider } from './editorFields';
 import type { AudioClip, AudioProject } from '../../model/types';
 import { AUDIO_EDITOR_MIN_CLIP_MS, getClipTimelineDurationMs, getClipTimelineEndMs } from './audioProject';
 import { AudioEditorHelpTip } from './AudioEditorGuide';
@@ -12,7 +13,7 @@ export function AudioEditorClipInspector({
   sourceDurationMs,
   playheadMs,
   selectedCount,
-  onPatch,
+  onPatch, onBeginGain, onCommitGain,
   onMoveLane,
   onSplit,
   onDuplicate,
@@ -25,7 +26,9 @@ export function AudioEditorClipInspector({
   sourceDurationMs?: number;
   playheadMs: number;
   selectedCount: number;
-  onPatch: (patch: Partial<AudioClip>) => void;
+  onPatch: (patch: Partial<AudioClip>, preview?: boolean) => void;
+  onBeginGain?: () => void;
+  onCommitGain?: () => void;
   onMoveLane: (laneId: string) => void;
   onSplit: () => void;
   onDuplicate: () => void;
@@ -76,7 +79,7 @@ export function AudioEditorClipInspector({
           step={0.05}
           onChange={(value) => onPatch({ sourceEndMs: value * 1000 })}
         />
-        <VolumeField value={clip.gainDb} onChange={(value) => onPatch({ gainDb: value })} />
+        <GainSlider label="Громкость фрагмента" value={clip.gainDb} onBegin={() => onBeginGain?.()} onPreview={value => onPatch({ gainDb: value }, true)} onCommit={() => onCommitGain?.()} />
         <NumberField label="Fade in, сек" help="Плавное появление звука в начале фрагмента." value={clip.fadeInMs / 1000} min={0} max={duration / 1000} step={0.05} onChange={(value) => onPatch({ fadeInMs: value * 1000 })} />
         <NumberField label="Fade out, сек" help="Плавное затухание звука в конце фрагмента." value={clip.fadeOutMs / 1000} min={0} max={duration / 1000} step={0.05} onChange={(value) => onPatch({ fadeOutMs: value * 1000 })} />
         <NumberField label="Скорость" help="0.5 — вдвое медленнее, 2 — вдвое быстрее. Сейчас вместе со скоростью меняется и высота звука." value={clip.playbackRate} min={0.25} max={4} step={0.05} onChange={(value) => onPatch({ playbackRate: value })} />
@@ -89,57 +92,7 @@ export function AudioEditorClipInspector({
   );
 }
 
-function VolumeField({ value, onChange }: { value: number; onChange: (value: number) => void }) {
-  const [draft, setDraft] = useState(() => clampGainDb(value));
-
-  useEffect(() => {
-    setDraft(clampGainDb(value));
-  }, [value]);
-
-  const commit = (next: number) => {
-    const normalized = clampGainDb(next);
-    setDraft(normalized);
-    if (Math.abs(normalized - value) >= 0.001) onChange(normalized);
-  };
-
-  return (
-    <div className="audio-editor-volume-field">
-      <div className="audio-editor-volume-field__header">
-        <span>Громкость фрагмента <AudioEditorHelpTip text="Громкость хранится отдельно для каждого фрагмента. 0 dB — исходная громкость, значения ниже делают его тише, выше — громче." /></span>
-        <output>{formatGainDb(draft)}</output>
-      </div>
-      <input
-        type="range"
-        min={-60}
-        max={12}
-        step={0.5}
-        value={draft}
-        aria-label="Громкость фрагмента"
-        onChange={(event) => setDraft(clampGainDb(Number(event.target.value)))}
-        onPointerUp={(event) => commit(Number(event.currentTarget.value))}
-        onKeyUp={(event) => commit(Number(event.currentTarget.value))}
-      />
-      <div className="audio-editor-volume-field__scale" aria-hidden="true">
-        <span>−60 dB</span>
-        <span>0 dB</span>
-        <span>+12 dB</span>
-      </div>
-      <button className="audio-editor-volume-reset" type="button" disabled={Math.abs(draft) < 0.001} onClick={() => commit(0)}>Сбросить на 0 dB</button>
-    </div>
-  );
-}
-
-function clampGainDb(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  return Math.max(-60, Math.min(12, Math.round(value * 2) / 2));
-}
-
-function formatGainDb(value: number) {
-  if (Math.abs(value) < 0.001) return '0 dB';
-  return `${value > 0 ? '+' : ''}${round(value, 1)} dB`;
-}
-
-function NumberField({ label, help, value, min, max, step, onChange }: { label: string; help?: string; value: number; min?: number; max?: number; step: number; onChange: (value: number) => void }) {
+export function NumberField({ label, help, value, min, max, step, onChange }: { label: string; help?: string; value: number; min?: number; max?: number; step: number; onChange: (value: number) => void }) {
   const [draft, setDraft] = useState(() => formatEditableNumber(value));
   const editingRef = useRef(false);
   const skipBlurCommitRef = useRef(false);
@@ -219,9 +172,4 @@ function formatMs(ms: number) {
   const minutes = Math.floor(totalTenths / 600);
   const seconds = (totalTenths % 600) / 10;
   return `${minutes}:${seconds.toFixed(seconds % 1 ? 1 : 0).padStart(seconds % 1 ? 4 : 2, '0')}`;
-}
-
-function round(value: number, digits: number) {
-  const factor = 10 ** digits;
-  return Math.round(value * factor) / factor;
 }

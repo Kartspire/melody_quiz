@@ -6,7 +6,7 @@ import { useAudioEditorPlayback } from './useAudioEditorPlayback';
 import { createAudioProject, createAudioClip } from './audioProject';
 import { playAudioProject, type AudioProjectPlayback } from './audioEngine';
 import type { AudioAsset, MediaTrack } from '../../model/types';
-vi.mock('./audioEngine', () => ({ playAudioProject: vi.fn() }));
+vi.mock('./audioEngine', async importOriginal => ({ ...await importOriginal<typeof import('./audioEngine')>(), playAudioProject: vi.fn() }));
 const mediaTracks: MediaTrack[] = [];
 const audioAssets: AudioAsset[] = [];
 let root: Root;
@@ -83,4 +83,21 @@ it('reports a current request failure and allows retry', async () => {
   vi.mocked(playAudioProject).mockResolvedValue({ stop: vi.fn() });
   await act(async () => { await api.toggle(); });
   expect(api.isPlaying).toBe(true);
+});
+
+it('updates live mix controls without creating or stopping an audio graph', async () => {
+  const stop = vi.fn(), updateMix = vi.fn();
+  vi.mocked(playAudioProject).mockResolvedValue({ stop, updateMix, position: () => 4567 });
+  await act(async () => api.toggle());
+  await act(async () => { project = { ...project, masterGainDb: -4, lanes: project.lanes.map(l => ({ ...l, muted: true })) }; root.render(<Probe />); });
+  expect(stop).not.toHaveBeenCalled(); expect(playAudioProject).toHaveBeenCalledOnce(); expect(updateMix).toHaveBeenCalledWith(project);
+  await act(async () => { project = { ...project, lanes: project.lanes.map(l => ({ ...l, clips: l.clips.map(c => ({ ...c, timelineStartMs: 200 })) })) }; root.render(<Probe />); });
+  expect(stop).toHaveBeenCalledOnce(); expect(api.playheadMs).toBe(4567);
+});
+
+it('passes the selected interval and loop mode to the audio clock', async () => {
+  vi.mocked(playAudioProject).mockResolvedValue({ stop: vi.fn() });
+  await act(async () => api.toggle({ startMs: 1200, endMs: 3400 }, true));
+  expect(vi.mocked(playAudioProject).mock.calls[0][3]).toBe(1200);
+  expect(vi.mocked(playAudioProject).mock.calls[0][4]).toMatchObject({ range: { startMs: 1200, endMs: 3400 }, loop: true });
 });

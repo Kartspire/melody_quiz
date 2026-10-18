@@ -49,9 +49,15 @@ export type AudioProject = {
   lanes: AudioEditorLane[];
   /** Optional for backwards compatibility with projects created before v1.7. */
   markers?: AudioProjectMarker[];
+  /** Missing in older v5 projects: unity gain and no saved ranges. */
+  masterGainDb?: number;
+  ranges?: AudioProjectRange[];
   createdAt: number;
   updatedAt: number;
 };
+
+export type AudioTimeRange = { startMs: number; endMs: number };
+export type AudioProjectRange = AudioTimeRange & { id: string; name: string };
 
 export type Song = {
   id: string;

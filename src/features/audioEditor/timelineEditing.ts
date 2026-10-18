@@ -30,6 +30,7 @@ export type AudioClipboard = {
 };
 
 type SnapOptions = {
+  disabled?: boolean;
   pixelsPerSecond: number;
   playheadMs?: number;
   excludedClipIds?: ReadonlySet<string>;
@@ -42,6 +43,7 @@ export function getProjectMarkers(project: AudioProject): AudioProjectMarker[] {
 
 export function snapTimelinePosition(project: AudioProject, valueMs: number, options: SnapOptions): TimelineSnapResult {
   const bounded = clampTimelineMs(valueMs);
+  if (options.disabled) return { valueMs: bounded, guideMs: null, kind: null };
   const thresholdMs = Math.max(1, AUDIO_EDITOR_SNAP_THRESHOLD_PX / Math.max(1, options.pixelsPerSecond) * 1000);
   const candidates = collectSnapCandidates(project, options);
   let best: { valueMs: number; kind: TimelineSnapKind; distance: number; priority: number } | null = null;
@@ -77,6 +79,7 @@ export function snapSelectionDelta(
   const minStart = Math.min(...selected.map(({ clip }) => clip.timelineStartMs));
   const maxEnd = Math.max(...selected.map(({ clip }) => getClipTimelineEndMs(clip)));
   const clampedDelta = clamp(rawDeltaMs, -minStart, AUDIO_EDITOR_MAX_PROJECT_MS - maxEnd);
+  if (options.disabled) return { deltaMs: clampedDelta, guideMs: null, kind: null };
   const excluded = new Set(clipIds);
   const movingEdges = selected.flatMap(({ clip }) => [
     clip.timelineStartMs + clampedDelta,
@@ -129,18 +132,33 @@ export function moveClips(project: AudioProject, clipIds: readonly string[], del
   return next;
 }
 
+/** Translate a selection as a group; clamp the whole group at the lane edges. */
+export function shiftClipLanes(project: AudioProject, clipIds: readonly string[], requestedDelta: number): AudioProject {
+  const ids = new Set(clipIds);
+  const indices = project.lanes.flatMap((lane, index) => lane.clips.some((clip) => ids.has(clip.id)) ? [index] : []);
+  if (!indices.length) return project;
+  const delta = clamp(Math.round(requestedDelta), -Math.min(...indices), project.lanes.length - 1 - Math.max(...indices));
+  if (!delta) return project;
+  const lanes = project.lanes.map((lane) => ({ ...lane, clips: lane.clips.filter((clip) => !ids.has(clip.id)) }));
+  project.lanes.forEach((lane, index) => {
+    for (const clip of lane.clips) if (ids.has(clip.id)) lanes[index + delta].clips.push(clip);
+  });
+  return { ...project, lanes };
+}
+
 export function trimClipStart(project: AudioProject, clipId: string, requestedTimelineStartMs: number): AudioProject {
   const location = findClip(project, clipId);
   if (!location) return project;
   const { lane, clip } = location;
   const deltaMs = requestedTimelineStartMs - clip.timelineStartMs;
-  const maxDelta = getClipTimelineDurationMs(clip) - AUDIO_EDITOR_MIN_CLIP_MS;
+  const maxDelta = getClipTimelineDurationMs(clip) - AUDIO_EDITOR_MIN_CLIP_MS / clip.playbackRate;
   const maxNegativeDelta = -Math.min(clip.timelineStartMs, clip.sourceStartMs / clip.playbackRate);
   const safeDelta = clamp(deltaMs, maxNegativeDelta, maxDelta);
   if (Math.abs(safeDelta) < 0.001) return project;
+  const sourceStartMs = Math.round(clip.sourceStartMs + safeDelta * clip.playbackRate);
   const next = patchClip(project, lane.id, clip.id, {
-    timelineStartMs: clip.timelineStartMs + safeDelta,
-    sourceStartMs: clip.sourceStartMs + safeDelta * clip.playbackRate,
+    timelineStartMs: clip.timelineStartMs + (sourceStartMs - clip.sourceStartMs) / clip.playbackRate,
+    sourceStartMs,
   });
   return next;
 }
@@ -151,7 +169,7 @@ export function trimClipEnd(project: AudioProject, clipId: string, requestedTime
   const { lane, clip } = location;
   const currentEndMs = getClipTimelineEndMs(clip);
   const deltaMs = requestedTimelineEndMs - currentEndMs;
-  const minDelta = -getClipTimelineDurationMs(clip) + AUDIO_EDITOR_MIN_CLIP_MS;
+  const minDelta = -getClipTimelineDurationMs(clip) + AUDIO_EDITOR_MIN_CLIP_MS / clip.playbackRate;
   const maxDelta = sourceDurationMs === undefined ? 0 : Math.max(0, (sourceDurationMs - clip.sourceEndMs) / clip.playbackRate);
   const safeDelta = clamp(deltaMs, minDelta, maxDelta);
   if (Math.abs(safeDelta) < 0.001) return project;

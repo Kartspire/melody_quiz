@@ -21,6 +21,8 @@ let root: Root;
 let resolve: (value: AudioBuffer) => void;
 beforeEach(async () => {
   vi.clearAllMocks();
+  URL.createObjectURL = vi.fn(() => 'blob:fixture');
+  URL.revokeObjectURL = vi.fn();
   seed();
   vi.mocked(decodeAudioAsset).mockReturnValue(new Promise(r => { resolve = r; }));
   el = document.createElement('div'); document.body.append(el);
@@ -59,4 +61,14 @@ it('undoes and redoes after duplicate button focus while preserving native input
   await key('KeyY', el.querySelector('button')!); expect($audioProjects.getState()[0].lanes[0].clips).toHaveLength(2);
   await key('KeyZ', el.querySelector('input')!); expect($audioProjects.getState()[0].lanes[0].clips).toHaveLength(2);
   expect(el.textContent).not.toContain('Crossfade');
+});
+
+it('does not silently retarget source insertion after its lane is removed', async () => {
+  await click('Добавить');
+  const current = $audioProjects.getState()[0];
+  const { audioProjectReplaced } = await import('./model');
+  await act(async () => audioProjectReplaced({ ...current, lanes: [{ ...current.lanes[0], id: 'different-lane' }] }));
+  await finishDecode();
+  expect($audioProjects.getState()[0].lanes[0].clips).toHaveLength(0);
+  expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'error' }));
 });

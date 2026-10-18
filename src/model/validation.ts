@@ -321,6 +321,18 @@ function assertValidAudioProject(project: AudioProject): void {
   if (!isBoundedText(project.name, DATA_LIMITS.text.audioProjectName) || !project.name.trim()) throw new Error(`Аудиопроект «${project.id}» не содержит корректного названия.`);
   if (!isValidTimestamp(project.createdAt) || !isValidTimestamp(project.updatedAt)) throw new Error(`Аудиопроект «${project.name}» содержит некорректную дату.`);
   if (!Array.isArray(project.lanes) || project.lanes.length < 1 || project.lanes.length > 32) throw new Error(`Аудиопроект «${project.name}» содержит некорректное количество дорожек.`);
+  if (project.masterGainDb !== undefined && (!Number.isFinite(project.masterGainDb) || project.masterGainDb < -60 || project.masterGainDb > 24)) throw new Error('Некорректная общая громкость аудиопроекта.');
+  if (project.ranges !== undefined) {
+    if (!Array.isArray(project.ranges) || project.ranges.length > 100) throw new Error('Некорректное количество диапазонов.');
+    const ids = new Set<string>();
+    for (const range of project.ranges) {
+      if (!range || !isBoundedText(range.id, DATA_LIMITS.text.id) || !range.id || ids.has(range.id)
+        || !isBoundedText(range.name, 120) || !range.name.trim()
+        || !Number.isFinite(range.startMs) || !Number.isFinite(range.endMs)
+        || range.startMs < 0 || range.endMs <= range.startMs || range.endMs > MAX_AUDIO_EDITOR_TIME_MS) throw new Error('Повреждённый диапазон аудиопроекта.');
+      ids.add(range.id);
+    }
+  }
   if (project.markers !== undefined) {
     if (!Array.isArray(project.markers) || project.markers.length > 500) throw new Error(`Аудиопроект «${project.name}» содержит некорректные маркеры.`);
     const markerIds = new Set<string>();

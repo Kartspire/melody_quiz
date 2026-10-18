@@ -21,8 +21,23 @@ export function createAudioProject(name = 'Новый монтаж'): AudioProje
     name: name.trim().slice(0, 200) || 'Новый монтаж',
     lanes: [createAudioEditorLane(0)],
     markers: [],
+    masterGainDb: 0,
+    ranges: [],
     createdAt: now,
     updatedAt: now,
+  };
+}
+
+export function duplicateAudioProject(project: AudioProject): AudioProject {
+  const now = Date.now();
+  return {
+    ...project, id: createId('audio-project'), name: `${project.name.slice(0, 190)} — копия`,
+    createdAt: now, updatedAt: now,
+    markers: project.markers?.map((marker) => ({ ...marker, id: createId('audio-marker') })),
+    ranges: project.ranges?.map((range) => ({ ...range, id: createId('audio-range') })),
+    lanes: project.lanes.map((lane) => ({ ...lane, id: createId('audio-lane'),
+      clips: lane.clips.map((clip) => ({ ...clip, id: createId('audio-clip') })),
+    })),
   };
 }
 
@@ -64,22 +79,22 @@ export function normalizeAudioClip(clip: AudioClip): AudioClip {
   const timelineDuration = sourceDuration / playbackRate;
   return {
     ...clip,
-    timelineStartMs: clampMs(clip.timelineStartMs),
+    // Source-aligned cuts can land between timeline milliseconds at non-unit rates.
+    timelineStartMs: clamp(Number.isFinite(clip.timelineStartMs) ? clip.timelineStartMs : 0, 0, AUDIO_EDITOR_MAX_PROJECT_MS),
     sourceStartMs,
     sourceEndMs,
     gainDb: clamp(clip.gainDb, -60, 12),
-    fadeInMs: clampMs(Math.min(clip.fadeInMs, timelineDuration)),
-    fadeOutMs: clampMs(Math.min(clip.fadeOutMs, timelineDuration)),
+    fadeInMs: Math.min(clampMs(clip.fadeInMs), timelineDuration),
+    fadeOutMs: Math.min(clampMs(clip.fadeOutMs), timelineDuration),
     playbackRate,
   };
 }
 
 export function splitAudioClip(clip: AudioClip, timelinePositionMs: number): [AudioClip, AudioClip] | null {
   const relativeTimelineMs = timelinePositionMs - clip.timelineStartMs;
-  const timelineDuration = getClipTimelineDurationMs(clip);
-  if (relativeTimelineMs < AUDIO_EDITOR_MIN_CLIP_MS || relativeTimelineMs > timelineDuration - AUDIO_EDITOR_MIN_CLIP_MS) return null;
-
-  const splitSourceMs = clip.sourceStartMs + relativeTimelineMs * clip.playbackRate;
+  if (!Number.isFinite(relativeTimelineMs)) return null;
+  const splitSourceMs = Math.round(clip.sourceStartMs + relativeTimelineMs * clip.playbackRate);
+  if (splitSourceMs - clip.sourceStartMs < AUDIO_EDITOR_MIN_CLIP_MS || clip.sourceEndMs - splitSourceMs < AUDIO_EDITOR_MIN_CLIP_MS) return null;
   const left = normalizeAudioClip({
     ...clip,
     sourceEndMs: splitSourceMs,
@@ -88,7 +103,7 @@ export function splitAudioClip(clip: AudioClip, timelinePositionMs: number): [Au
   const right = normalizeAudioClip({
     ...clip,
     id: createId('audio-clip'),
-    timelineStartMs: timelinePositionMs,
+    timelineStartMs: getClipTimelineEndMs(left),
     sourceStartMs: splitSourceMs,
     fadeInMs: 0,
   });

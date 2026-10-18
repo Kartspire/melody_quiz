@@ -106,6 +106,18 @@ describe('audio editor timeline editing', () => {
     expect(second.timelineStartMs).toBe(5_500);
   });
 
+  it.each([0.25, 0.5, 2, 4])('respects the minimum source duration when trimming at speed %s', (playbackRate) => {
+    const original = { ...clip('a', 1000, 1000), playbackRate };
+    const source = project([lane('lane-1', [original])]);
+    const end = getClipTimelineEndMs(original);
+    const left = trimClipStart(source, 'a', end - 1).lanes[0].clips[0];
+    expect(left.sourceEndMs - left.sourceStartMs).toBe(50);
+    expect(getClipTimelineEndMs(left)).toBe(end);
+    const right = trimClipEnd(source, 'a', original.timelineStartMs + 1, 1000).lanes[0].clips[0];
+    expect(right.sourceEndMs - right.sourceStartMs).toBe(50);
+    expect(right.timelineStartMs).toBe(original.timelineStartMs);
+  });
+
   it('preserves manual fades when clips overlap after timeline operations', () => {
     const a = { ...clip('a', 0, 8_000), fadeInMs: 250, fadeOutMs: 500 };
     const b = { ...clip('b', 6_000, 8_000), fadeInMs: 750, fadeOutMs: 300 };

@@ -33,6 +33,8 @@ async function makeState(): Promise<PersistedState> {
   };
   const project = createAudioProject('Резервный монтаж');
   project.lanes[0].clips = [createAudioClip(track.id, 5_000)];
+  project.masterGainDb = -4.5;
+  project.ranges = [{ id: 'range-backup', name: 'Припев', startMs: 1200, endMs: 4500 }];
   return {
     ...base,
     mediaTracks: [track],

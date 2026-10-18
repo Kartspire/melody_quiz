@@ -13,6 +13,8 @@ export type AddMediaTrackFileResult = {
 export type AddMediaTrackFileParams = {
   blob: Blob;
   fileName: string;
+  /** Guards the original caller across the serialized queue and async decode. */
+  assertCurrent?: () => void;
 };
 
 let generatedTrackQueue: Promise<void> = Promise.resolve();
@@ -29,13 +31,15 @@ export const addMediaTrackFileFx = createEffect<AddMediaTrackFileParams, AddMedi
   return operation;
 });
 
-async function addMediaTrackFile({ blob, fileName }: AddMediaTrackFileParams): Promise<AddMediaTrackFileResult> {
+async function addMediaTrackFile({ blob, fileName, assertCurrent }: AddMediaTrackFileParams): Promise<AddMediaTrackFileResult> {
+  assertCurrent?.();
   const normalizedFileName = fileName.trim() || 'track.wav';
   const file = new File([blob], normalizedFileName, {
     type: blob.type || 'audio/wav',
     lastModified: Date.now(),
   });
   const audioAsset = await createAudioAsset(file);
+  assertCurrent?.();
   const name = mediaTrackNameFromFileName(normalizedFileName);
 
   const before = $mediaTracks.getState();
